@@ -30,8 +30,6 @@ async function loadForm() {
   $('#lmstudio-endpoint').value = settings.providers.lmstudio.endpoint || '';
   $('#lmstudio-model').value = settings.providers.lmstudio.model || '';
 
-  // Theme
-  $('#theme').value = settings.ui.theme || 'auto';
 }
 
 async function saveForm() {
@@ -55,9 +53,7 @@ async function saveForm() {
         model: $('#lmstudio-model').value.trim(),
       },
     },
-    ui: {
-      theme: $('#theme').value,
-    },
+    ui: {},
   };
 
   await saveSettings(settings);

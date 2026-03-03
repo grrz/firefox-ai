@@ -41,7 +41,6 @@ const pageWordCountEl = $('#pageWordCount');
 // ========== Initialization ==========
 async function init() {
   state.settings = await loadSettings();
-  applyTheme(state.settings.ui.theme);
   renderActionCards();
   bindEvents();
 
@@ -158,11 +157,6 @@ async function handleTabChange(tabId) {
   state.currentTabId = tabId;
   restoreTabState(tabId);
 }
-
-// ========== Theme ==========
-// Colors follow Firefox's theme automatically via CSS system colors.
-// applyTheme kept as a no-op for settings compatibility.
-function applyTheme() {}
 
 // ========== Page Context ==========
 async function fetchPageContext() {
@@ -614,7 +608,6 @@ function bindEvents() {
   browser.storage.onChanged.addListener((changes, area) => {
     if (area === 'sync' && changes.settings) {
       state.settings = changes.settings.newValue;
-      applyTheme(state.settings?.ui?.theme || 'auto');
     }
   });
 
