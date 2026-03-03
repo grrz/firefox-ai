@@ -159,12 +159,20 @@ async function handleTabChange(tabId) {
 }
 
 // ========== Page Context ==========
-async function fetchPageContext() {
+async function fetchPageContext(retries = 2) {
   try {
     loadingOverlay.classList.remove('hidden');
-    const result = await browser.runtime.sendMessage({ type: 'getDistilledContent' });
+    const result = await Promise.race([
+      browser.runtime.sendMessage({ type: 'getDistilledContent' }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+    ]);
     state.pageContext = result;
   } catch {
+    if (retries > 0) {
+      // Content script may not be injected yet — retry after a short delay
+      await new Promise(r => setTimeout(r, 500));
+      return fetchPageContext(retries - 1);
+    }
     state.pageContext = { title: '', url: '', textContent: '', wordCount: 0, error: 'Could not access page' };
   } finally {
     loadingOverlay.classList.add('hidden');
