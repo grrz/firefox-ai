@@ -219,6 +219,23 @@ body {
   word-break: break-word;
 }
 
+.message-notice {
+  align-self: stretch;
+}
+
+.message-notice .message-bubble {
+  background: color-mix(in srgb, var(--accent) 10%, Canvas);
+  color: var(--text-primary);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, Canvas);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.message-notice .message-bubble ul {
+  margin: 4px 0 0 18px;
+}
+
 /* Markdown content styling */
 .message-assistant .message-bubble h1,
 .message-assistant .message-bubble h2,

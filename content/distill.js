@@ -186,6 +186,125 @@
     return blocks;
   }
 
+  function uniqueBy(items, keyFn) {
+    const seen = new Set();
+    const out = [];
+    for (const item of items) {
+      const key = keyFn(item);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(item);
+    }
+    return out;
+  }
+
+  function limitArray(items, max, label, limits) {
+    if (!Array.isArray(items)) return [];
+    if (items.length <= max) return items;
+    limits.push(`${label}: kept ${max} of ${items.length}`);
+    return items.slice(0, max);
+  }
+
+  function looksLikeVisibleContentFrame(iframeEl) {
+    try {
+      const rect = iframeEl.getBoundingClientRect();
+      if (rect.width < 250 || rect.height < 150) return false;
+      const style = window.getComputedStyle(iframeEl);
+      return !(style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0');
+
+    } catch {
+      return false;
+    }
+  }
+
+  function extractMainContentFromDocument(doc) {
+    if (!doc?.body) {
+      return {
+        headings: [],
+        paragraphs: [],
+        images: [],
+        links: [],
+        lists: [],
+        tables: [],
+        codeBlocks: [],
+      };
+    }
+
+    const clone = doc.body.cloneNode(true);
+    removeNoise(clone);
+    const mainContent = findMainContent(clone);
+
+    return {
+      headings: extractHeadings(mainContent),
+      paragraphs: extractParagraphs(mainContent),
+      images: extractImages(mainContent),
+      links: extractLinks(mainContent),
+      lists: extractLists(mainContent),
+      tables: extractTables(mainContent),
+      codeBlocks: extractCodeBlocks(mainContent),
+    };
+  }
+
+  function extractAccessibleIframeContent() {
+    const MAX_VISIBLE_IFRAMES = 5;
+    const allFrames = Array.from(document.querySelectorAll('iframe'));
+    const visibleFrames = allFrames.filter(looksLikeVisibleContentFrame);
+    const merge = {
+      headings: [],
+      paragraphs: [],
+      images: [],
+      links: [],
+      lists: [],
+      tables: [],
+      codeBlocks: [],
+    };
+    const limits = [];
+
+    let processed = 0;
+    let crossOriginSkipped = 0;
+    let dueToCountSkipped = 0;
+    for (const iframe of visibleFrames) {
+      if (processed >= MAX_VISIBLE_IFRAMES) {
+        dueToCountSkipped += 1;
+        continue;
+      }
+
+      try {
+        const doc = iframe.contentDocument;
+        if (!doc?.body) continue;
+        const frameData = extractMainContentFromDocument(doc);
+        merge.headings.push(...frameData.headings);
+        merge.paragraphs.push(...frameData.paragraphs);
+        merge.images.push(...frameData.images);
+        merge.links.push(...frameData.links);
+        merge.lists.push(...frameData.lists);
+        merge.tables.push(...frameData.tables);
+        merge.codeBlocks.push(...frameData.codeBlocks);
+        processed += 1;
+      } catch {
+        // Cross-origin iframes are not readable in content scripts.
+        crossOriginSkipped += 1;
+      }
+    }
+
+    if (dueToCountSkipped > 0) {
+      limits.push(`visible iframes: processed ${MAX_VISIBLE_IFRAMES} of ${visibleFrames.length}`);
+    }
+    if (crossOriginSkipped > 0) {
+      limits.push(`cross-origin iframes skipped: ${crossOriginSkipped}`);
+    }
+
+    merge.headings = uniqueBy(merge.headings, (h) => `${h.level}|${h.text}`);
+    merge.paragraphs = uniqueBy(merge.paragraphs, (p) => p);
+    merge.images = uniqueBy(merge.images, (img) => `${img.src}|${img.alt}|${img.caption}`);
+    merge.links = uniqueBy(merge.links, (l) => l.href);
+    merge.lists = uniqueBy(merge.lists, (l) => `${l.type}|${l.items.join('|')}`);
+    merge.tables = uniqueBy(merge.tables, (t) => JSON.stringify(t));
+    merge.codeBlocks = uniqueBy(merge.codeBlocks, (b) => b);
+
+    return { content: merge, limits };
+  }
+
   /**
    * Extract comments from the live document.
    * Handles: same-origin comment iframes (XenForo, Disqus, etc.)
@@ -956,17 +1075,25 @@
       description: description.substring(0, 300),
       textContent,
       wordCount,
+      contextLimits: {
+        applied: false,
+        details: [],
+      },
     };
   }
 
   // ── Generic extraction ─────────────────────────────────────────────
 
-  async function distill() {
+  async function distill(options = {}) {
     if (isYouTubeWatchPage()) return distillYouTube();
 
-    const clone = document.body.cloneNode(true);
-    removeNoise(clone);
-    const mainContent = findMainContent(clone);
+    const mainDocContent = extractMainContentFromDocument(document);
+    const includeIframes = options.includeIframes !== false;
+    const iframeResult = includeIframes
+      ? extractAccessibleIframeContent()
+      : { content: { headings: [], paragraphs: [], images: [], links: [], lists: [], tables: [], codeBlocks: [] }, limits: [] };
+    const iframeContent = iframeResult.content;
+    const limits = [...iframeResult.limits];
 
     const title = document.title || '';
     const url = document.location.href;
@@ -977,13 +1104,33 @@
       title,
       url,
       description,
-      headings: extractHeadings(mainContent),
-      paragraphs: extractParagraphs(mainContent),
-      images: extractImages(mainContent),
-      links: extractLinks(mainContent),
-      lists: extractLists(mainContent),
-      tables: extractTables(mainContent),
-      codeBlocks: extractCodeBlocks(mainContent),
+      headings: uniqueBy([...mainDocContent.headings, ...iframeContent.headings], (h) => `${h.level}|${h.text}`),
+      paragraphs: limitArray(
+        uniqueBy([...mainDocContent.paragraphs, ...iframeContent.paragraphs], (p) => p),
+        400,
+        'paragraphs',
+        limits
+      ),
+      images: uniqueBy([...mainDocContent.images, ...iframeContent.images], (img) => `${img.src}|${img.alt}|${img.caption}`),
+      links: limitArray(
+        uniqueBy([...mainDocContent.links, ...iframeContent.links], (l) => l.href),
+        250,
+        'links',
+        limits
+      ),
+      lists: uniqueBy([...mainDocContent.lists, ...iframeContent.lists], (l) => `${l.type}|${l.items.join('|')}`),
+      tables: limitArray(
+        uniqueBy([...mainDocContent.tables, ...iframeContent.tables], (t) => JSON.stringify(t)),
+        80,
+        'tables',
+        limits
+      ),
+      codeBlocks: limitArray(
+        uniqueBy([...mainDocContent.codeBlocks, ...iframeContent.codeBlocks], (b) => b),
+        150,
+        'code blocks',
+        limits
+      ),
       comments: extractComments(),
     };
 
@@ -996,13 +1143,17 @@
       description,
       textContent,
       wordCount,
+      contextLimits: {
+        applied: limits.length > 0,
+        details: limits,
+      },
     };
   }
 
   // Listen for distill requests from background/sidebar
   browser.runtime.onMessage.addListener((message) => {
     if (message.type === 'distill') {
-      return distill().catch(err => ({
+      return distill(message.options || {}).catch(err => ({
         title: document.title || '',
         url: document.location.href,
         description: '',

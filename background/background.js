@@ -40,6 +40,107 @@ function buildChatMessages(messages, pageContext, settings) {
   return chatMessages;
 }
 
+function mergeContextLimits(allLimitEntries) {
+  const details = [];
+  for (const entry of allLimitEntries) {
+    if (!entry || !Array.isArray(entry.details)) continue;
+    for (const detail of entry.details) {
+      if (!details.includes(detail)) details.push(detail);
+    }
+  }
+  return {
+    applied: details.length > 0,
+    details,
+  };
+}
+
+async function getDistilledContentForActiveTab() {
+  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+  if (!tabs[0]) return { error: 'No active tab' };
+
+  const tabId = tabs[0].id;
+  const frameResponses = [];
+  let frames;
+
+  try {
+    frames = await browser.webNavigation.getAllFrames({ tabId });
+  } catch {
+    frames = [];
+  }
+
+  // Fallback to top frame if frame enumeration is unavailable.
+  if (!Array.isArray(frames) || frames.length === 0) {
+    return browser.tabs.sendMessage(tabId, {type: 'distill', options: {includeIframes: true}});
+  }
+
+  for (const frame of frames) {
+    try {
+      const data = await browser.tabs.sendMessage(
+        tabId,
+        { type: 'distill', options: { includeIframes: false } },
+        { frameId: frame.frameId }
+      );
+      if (data && !data.error && data.textContent) {
+        frameResponses.push({
+          frameId: frame.frameId,
+          url: frame.url || data.url || '',
+          data,
+        });
+      }
+    } catch {
+      // Some frames are inaccessible (restricted/internal/cross-browser boundary).
+    }
+  }
+
+  if (frameResponses.length === 0) {
+    return {
+      title: '',
+      url: tabs[0].url || '',
+      textContent: '',
+      wordCount: 0,
+      error: 'Could not access page content. The page may not be fully loaded.',
+    };
+  }
+
+  const topFrame = frameResponses.find((f) => f.frameId === 0) || frameResponses[0];
+  const childFrames = frameResponses.filter((f) => f !== topFrame);
+
+  const MAX_CHILD_FRAMES = 8;
+  const includedChildFrames = childFrames.slice(0, MAX_CHILD_FRAMES);
+
+  const parts = [topFrame.data.textContent];
+  for (const frame of includedChildFrames) {
+    const sectionTitle = frame.data.title || frame.url || `Frame ${frame.frameId}`;
+    parts.push(`## Embedded frame: ${sectionTitle}\n\n${frame.data.textContent}`);
+  }
+
+  const limits = [];
+  if (childFrames.length > MAX_CHILD_FRAMES) {
+    limits.push(`embedded frames: included ${MAX_CHILD_FRAMES} of ${childFrames.length}`);
+  }
+  if (frames.length > frameResponses.length) {
+    limits.push(`inaccessible frames skipped: ${frames.length - frameResponses.length}`);
+  }
+
+  const contextLimits = mergeContextLimits([
+    topFrame.data.contextLimits,
+    ...includedChildFrames.map((f) => f.data.contextLimits),
+    { details: limits },
+  ]);
+
+  const textContent = parts.join('\n\n---\n\n');
+  const wordCount = textContent.split(/\s+/).filter(Boolean).length;
+
+  return {
+    title: topFrame.data.title || tabs[0].title || '',
+    url: topFrame.data.url || tabs[0].url || '',
+    description: topFrame.data.description || '',
+    textContent,
+    wordCount,
+    contextLimits,
+  };
+}
+
 // Port-based streaming communication
 browser.runtime.onConnect.addListener((port) => {
   if (port.name !== 'ai-chat') return;
@@ -117,10 +218,7 @@ browser.runtime.onConnect.addListener((port) => {
 browser.runtime.onMessage.addListener(async (message) => {
   if (message.type === 'getDistilledContent') {
     try {
-      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-      if (!tabs[0]) return { error: 'No active tab' };
-
-      return await browser.tabs.sendMessage(tabs[0].id, {type: 'distill'});
+      return await getDistilledContentForActiveTab();
     } catch (err) {
       return {
         title: '',

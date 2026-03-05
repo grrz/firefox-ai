@@ -11,7 +11,7 @@ const MAX_SAVED_PAGE_CHATS = 50;
 // Display state for the currently visible tab
 const state = {
   mode: 'welcome', // 'welcome' | 'chat'
-  messages: [],     // {role: 'user'|'assistant', content: string}
+  messages: [],     // {role: 'user'|'assistant'|'notice', content: string}
   pageContext: null,
   settings: null,
   currentTabId: null,
@@ -289,12 +289,42 @@ function renderMessage(message, index) {
     bubble.textContent = message.content;
   } else if (message.role === 'assistant') {
     bubble.innerHTML = renderMarkdown(message.content);
+  } else if (message.role === 'notice') {
+    bubble.innerHTML = renderContextLimitNotice(message.details || []);
   } else if (message.role === 'error') {
     bubble.innerHTML = message.content;
   }
 
   el.appendChild(bubble);
   return el;
+}
+
+function renderContextLimitNotice(details) {
+  const safeDetails = Array.isArray(details) ? details : [];
+  const items = safeDetails.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('');
+  return [
+    '<strong>Context was limited before sending to the model.</strong>',
+    '<div>Applied limits:</div>',
+    `<ul>${items}</ul>`,
+  ].join('');
+}
+
+function maybeAppendContextLimitNotice() {
+  const details = state.pageContext?.contextLimits?.details;
+  if (!state.pageContext?.contextLimits?.applied || !Array.isArray(details) || details.length === 0) return;
+
+  const signature = details.join(' | ');
+  const hasSameNotice = state.messages.some(
+    (m) => m.role === 'notice' && m.noticeKey === 'context-limits' && m.signature === signature
+  );
+  if (hasSameNotice) return;
+
+  appendMessage({
+    role: 'notice',
+    noticeKey: 'context-limits',
+    signature,
+    details,
+  });
 }
 
 function appendMessage(message) {
@@ -480,6 +510,8 @@ async function startStreaming() {
   } catch {
     // Keep existing context
   }
+
+  maybeAppendContextLimitNotice();
 
   const stream = {
     tabId,
@@ -690,10 +722,19 @@ function normalizePageUrl(rawUrl) {
 function cloneChatMessages(messages) {
   if (!Array.isArray(messages)) return [];
   return messages
-    .filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant') && typeof msg.content === 'string')
+    .filter(msg => msg && (
+      msg.role === 'user' ||
+      msg.role === 'assistant' ||
+      msg.role === 'notice'
+    ))
     .map(msg => {
-      const cloned = { role: msg.role, content: msg.content };
+      const cloned = { role: msg.role, content: typeof msg.content === 'string' ? msg.content : '' };
       if (typeof msg.thinking === 'string' && msg.thinking) cloned.thinking = msg.thinking;
+      if (msg.role === 'notice') {
+        if (typeof msg.noticeKey === 'string') cloned.noticeKey = msg.noticeKey;
+        if (typeof msg.signature === 'string') cloned.signature = msg.signature;
+        if (Array.isArray(msg.details)) cloned.details = msg.details.map(x => String(x));
+      }
       return cloned;
     });
 }
