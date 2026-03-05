@@ -31,6 +31,7 @@ export const PROVIDERS = {
 
 export const DEFAULT_SETTINGS = {
   activeProvider: 'claude',
+  responseLanguage: 'en',
   providers: {
     claude: { apiKey: '', model: PROVIDERS.claude.defaultModel },
     openai: { apiKey: '', model: PROVIDERS.openai.defaultModel },
@@ -41,3 +42,8 @@ export const DEFAULT_SETTINGS = {
 };
 
 export const SYSTEM_PROMPT = `You are a helpful AI assistant integrated into a web browser sidebar. The user may provide you with the content of the web page they are currently viewing. Use this context to provide relevant, accurate, and concise answers. If page content is provided, reference it directly in your responses when relevant. Format your responses using Markdown when appropriate.`;
+
+export const RESPONSE_LANGUAGES = {
+  en: 'English',
+  ru: 'Russian',
+};

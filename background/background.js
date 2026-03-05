@@ -1,5 +1,5 @@
 import {getProviderConfig, loadSettings} from '../shared/settings.js';
-import {SYSTEM_PROMPT} from '../shared/constants.js';
+import {RESPONSE_LANGUAGES, SYSTEM_PROMPT} from '../shared/constants.js';
 import {OpenAIProvider} from './providers/openai.js';
 import {ClaudeProvider} from './providers/claude.js';
 import {LMStudioProvider} from './providers/lmstudio.js';
@@ -20,10 +20,12 @@ function createProvider(settings) {
   }
 }
 
-function buildChatMessages(messages, pageContext) {
+function buildChatMessages(messages, pageContext, settings) {
   const chatMessages = [];
 
   let systemContent = SYSTEM_PROMPT;
+  const selectedLanguage = RESPONSE_LANGUAGES[settings?.responseLanguage] || RESPONSE_LANGUAGES.en;
+  systemContent += `\n\nAlways answer in ${selectedLanguage}.`;
   if (pageContext?.textContent) {
     systemContent += `\n\n--- PAGE CONTEXT ---\n${pageContext.textContent}\n--- END PAGE CONTEXT ---`;
   }
@@ -64,7 +66,7 @@ browser.runtime.onConnect.addListener((port) => {
           return;
         }
 
-        const chatMessages = buildChatMessages(messages, pageContext);
+        const chatMessages = buildChatMessages(messages, pageContext, settings);
 
         port.postMessage({ type: 'stream_start' });
 

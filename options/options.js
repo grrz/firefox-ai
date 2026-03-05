@@ -12,6 +12,7 @@ async function loadForm() {
   const settings = await loadSettings();
 
   $('#activeProvider').value = settings.activeProvider;
+  $('#responseLanguage').value = settings.responseLanguage;
   showProviderConfig(settings.activeProvider);
 
   // Claude
@@ -35,6 +36,7 @@ async function loadForm() {
 async function saveForm() {
   const settings = {
     activeProvider: $('#activeProvider').value,
+    responseLanguage: $('#responseLanguage').value,
     providers: {
       claude: {
         apiKey: $('#claude-apiKey').value.trim(),
