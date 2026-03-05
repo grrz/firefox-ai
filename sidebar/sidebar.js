@@ -3,6 +3,9 @@ import {ACTIONS} from '../shared/actions.js';
 import {loadSettings} from '../shared/settings.js';
 import {PROVIDERS} from '../shared/constants.js';
 
+const PAGE_CHATS_STORAGE_KEY = 'pageChatsByUrl';
+const MAX_SAVED_PAGE_CHATS = 50;
+
 // ========== State ==========
 
 // Display state for the currently visible tab
@@ -12,10 +15,12 @@ const state = {
   pageContext: null,
   settings: null,
   currentTabId: null,
+  currentPageKey: null,
 };
 
-// Per-tab conversation state (in-memory, lost when sidebar closes)
+// Per-tab conversation state (in-memory cache, with persistent fallback by page URL)
 const tabStates = new Map();
+let persistQueue = Promise.resolve();
 
 // Active streams that keep running even when their tab isn't displayed.
 // Keyed by tabId → { port, streamedText, streamedThinking, thinkingStartTime, thinkingElapsed, tabId }
@@ -46,8 +51,11 @@ async function init() {
   const tabs = await browser.tabs.query({ active: true, currentWindow: true });
   if (tabs[0]) {
     state.currentTabId = tabs[0].id;
+    state.currentPageKey = normalizePageUrl(tabs[0].url);
+    await restoreTabState(state.currentTabId);
+  } else {
+    fetchPageContext();
   }
-  fetchPageContext();
 }
 
 // ========== Per-Tab State ==========
@@ -55,19 +63,30 @@ function saveTabState() {
   if (state.currentTabId == null) return;
   tabStates.set(state.currentTabId, {
     mode: state.mode,
-    messages: [...state.messages],
+    messages: cloneChatMessages(state.messages),
     pageContext: state.pageContext,
+    pageKey: state.currentPageKey,
   });
+  queuePersistCurrentPageChat();
 }
 
-function restoreTabState(tabId) {
+async function restoreTabState(tabId) {
   const saved = tabStates.get(tabId);
+  const savedForPage = saved && saved.pageKey === state.currentPageKey ? saved : null;
+  const persisted = savedForPage ? null : await loadPersistedChatForPage(state.currentPageKey);
+  const source = savedForPage || persisted;
   const stream = activeStreams.get(tabId);
 
-  if (saved) {
-    state.mode = saved.mode;
-    state.messages = [...saved.messages];
-    state.pageContext = saved.pageContext;
+  if (source) {
+    state.mode = source.mode;
+    state.messages = cloneChatMessages(source.messages);
+    state.pageContext = source.pageContext || null;
+    tabStates.set(tabId, {
+      mode: source.mode,
+      messages: cloneChatMessages(source.messages),
+      pageContext: source.pageContext || null,
+      pageKey: state.currentPageKey,
+    });
   } else {
     state.mode = 'welcome';
     state.messages = [];
@@ -89,7 +108,7 @@ function restoreTabState(tabId) {
     sendBtn.classList.add('hidden');
     stopBtn.classList.remove('hidden');
     scrollToBottom();
-  } else if (!saved || saved.messages.length === 0) {
+  } else if (!source || source.messages.length === 0) {
     fetchPageContext();
   }
 }
@@ -152,17 +171,22 @@ async function handleTabChange(tabId) {
 
   // Switch to new tab
   state.currentTabId = tabId;
-  restoreTabState(tabId);
+  state.currentPageKey = await getPageKeyForTabId(tabId);
+  await restoreTabState(tabId);
 }
 
 // ========== Page Context ==========
 async function fetchPageContext(retries = 2) {
   try {
     loadingOverlay.classList.remove('hidden');
-    state.pageContext = await Promise.race([
+    const freshContext = await Promise.race([
       browser.runtime.sendMessage({type: 'getDistilledContent'}),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
     ]);
+    state.pageContext = freshContext;
+    if (freshContext?.url) {
+      state.currentPageKey = normalizePageUrl(freshContext.url) || state.currentPageKey;
+    }
   } catch {
     if (retries > 0) {
       // Content script may not be injected yet — retry after a short delay
@@ -173,6 +197,7 @@ async function fetchPageContext(retries = 2) {
   } finally {
     loadingOverlay.classList.add('hidden');
     updatePageInfo();
+    saveTabState();
   }
 }
 
@@ -205,6 +230,7 @@ function switchToWelcome() {
   if (state.currentTabId != null) {
     tabStates.delete(state.currentTabId);
   }
+  queuePersistCurrentPageChat();
 }
 
 // ========== Actions ==========
@@ -276,6 +302,7 @@ function appendMessage(message) {
   const el = renderMessage(message, state.messages.length - 1);
   messagesEl.appendChild(el);
   scrollToBottom();
+  saveTabState();
 }
 
 function scrollToBottom() {
@@ -617,13 +644,20 @@ function bindEvents() {
 
   // Tab switch — save current state, restore new tab (streams keep running)
   browser.tabs.onActivated.addListener(({ tabId }) => {
-    handleTabChange(tabId);
+    void handleTabChange(tabId);
   });
 
-  // In-tab navigation — refresh page context but keep conversation
-  browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  // In-tab navigation — switch to chat that belongs to the new page URL
+  browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (tabId === state.currentTabId && changeInfo.status === 'complete') {
-      fetchPageContext();
+      const nextPageKey = normalizePageUrl(tab?.url);
+      if (nextPageKey !== state.currentPageKey) {
+        saveTabState();
+        state.currentPageKey = nextPageKey;
+        void restoreTabState(tabId);
+      } else {
+        fetchPageContext();
+      }
     }
   });
 
@@ -640,3 +674,89 @@ function bindEvents() {
 
 // ========== Start ==========
 init();
+
+function normalizePageUrl(rawUrl) {
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function cloneChatMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant') && typeof msg.content === 'string')
+    .map(msg => {
+      const cloned = { role: msg.role, content: msg.content };
+      if (typeof msg.thinking === 'string' && msg.thinking) cloned.thinking = msg.thinking;
+      return cloned;
+    });
+}
+
+async function getPageKeyForTabId(tabId) {
+  try {
+    const tab = await browser.tabs.get(tabId);
+    return normalizePageUrl(tab?.url);
+  } catch {
+    return null;
+  }
+}
+
+async function loadPersistedChatsByPage() {
+  const saved = await browser.storage.local.get(PAGE_CHATS_STORAGE_KEY);
+  const chats = saved?.[PAGE_CHATS_STORAGE_KEY];
+  if (!chats || typeof chats !== 'object' || Array.isArray(chats)) return {};
+  return chats;
+}
+
+function trimPersistedChats(chatsByPage) {
+  const entries = Object.entries(chatsByPage);
+  entries.sort((a, b) => (b[1]?.updatedAt || 0) - (a[1]?.updatedAt || 0));
+  return Object.fromEntries(entries.slice(0, MAX_SAVED_PAGE_CHATS));
+}
+
+async function loadPersistedChatForPage(pageKey) {
+  if (!pageKey) return null;
+  const chats = await loadPersistedChatsByPage();
+  const saved = chats[pageKey];
+  if (!saved || !Array.isArray(saved.messages)) return null;
+  return {
+    mode: saved.mode === 'chat' ? 'chat' : 'welcome',
+    messages: cloneChatMessages(saved.messages),
+    pageContext: saved.pageContext || null,
+  };
+}
+
+async function persistCurrentPageChat() {
+  const pageKey = state.currentPageKey;
+  if (!pageKey) return;
+
+  const chats = await loadPersistedChatsByPage();
+  const hasConversation = state.mode === 'chat' && state.messages.length > 0;
+
+  if (!hasConversation) {
+    delete chats[pageKey];
+    await browser.storage.local.set({ [PAGE_CHATS_STORAGE_KEY]: chats });
+    return;
+  }
+
+  chats[pageKey] = {
+    mode: 'chat',
+    messages: cloneChatMessages(state.messages),
+    pageContext: state.pageContext || null,
+    updatedAt: Date.now(),
+  };
+
+  await browser.storage.local.set({ [PAGE_CHATS_STORAGE_KEY]: trimPersistedChats(chats) });
+}
+
+function queuePersistCurrentPageChat() {
+  persistQueue = persistQueue
+    .then(() => persistCurrentPageChat())
+    .catch(() => {});
+}
