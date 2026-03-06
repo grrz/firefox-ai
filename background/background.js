@@ -85,6 +85,10 @@ function clonePersistableMessages(messages) {
     .map((msg) => {
       const cloned = { role: msg.role, content: msg.content };
       if (typeof msg.thinking === 'string' && msg.thinking) cloned.thinking = msg.thinking;
+      if (msg.role === 'user') {
+        if (typeof msg.actionId === 'string' && msg.actionId) cloned.actionId = msg.actionId;
+        if (typeof msg.actionLabel === 'string' && msg.actionLabel) cloned.actionLabel = msg.actionLabel;
+      }
       return cloned;
     });
 }

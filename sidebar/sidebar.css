@@ -63,10 +63,94 @@ body {
   font-size: 15px;
 }
 
+.header-title-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.history-dropdown {
+  position: relative;
+  max-width: 100%;
+}
+
+.history-toggle-btn {
+  max-width: 220px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.history-toggle-btn:hover {
+  border-color: var(--accent);
+}
+
+.history-toggle-btn .history-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  min-width: 220px;
+  max-width: 280px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 5;
+}
+
+.history-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.history-menu-item:hover {
+  background: var(--bg-secondary);
+}
+
+.history-item-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.history-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .header-actions {
   display: flex;
   align-items: center;
   gap: 4px;
+  margin-left: 8px;
 }
 
 .lang-toggle-btn {
@@ -277,6 +361,60 @@ body {
   margin-left: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.message-user-action .message-bubble {
+  max-width: 100%;
+}
+
+.user-action-message {
+  margin: 0;
+}
+
+.user-action-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+}
+
+.user-action-summary::-webkit-details-marker {
+  display: none;
+}
+
+.user-action-icon {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+}
+
+.user-action-label {
+  min-width: 0;
+  white-space: normal;
+  line-height: 1.25;
+}
+
+.user-action-chevron {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.9;
+  transform-origin: center;
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.user-action-message[open] .user-action-chevron {
+  transform: rotate(180deg);
+}
+
+.user-action-text {
+  margin-top: 6px;
+  font-weight: 400;
+  white-space: pre-wrap;
 }
 
 .message-assistant {

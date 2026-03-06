@@ -42,6 +42,10 @@ const stopBtn = $('#stopBtn');
 const newChatBtn = $('#newChatBtn');
 const settingsBtn = $('#settingsBtn');
 const languageToggleBtn = $('#languageToggleBtn');
+const headerTitleEl = $('#headerTitle');
+const historyDropdownEl = $('#historyDropdown');
+const historyToggleBtn = $('#historyToggleBtn');
+const historyMenuEl = $('#historyMenu');
 const loadingOverlay = $('#loadingOverlay');
 const pageTitleEl = $('#pageTitle');
 const pageWordCountEl = $('#pageWordCount');
@@ -146,10 +150,12 @@ function rebuildUI() {
     }
     renderActionBar();
     scrollToBottom(true);
+    updateHistoryDropdownUI();
   } else {
     welcomeState.classList.remove('hidden');
     chatState.classList.add('hidden');
     updatePageInfo();
+    updateHistoryDropdownUI();
   }
 }
 
@@ -251,6 +257,7 @@ function switchToWelcome() {
 
   state.mode = 'welcome';
   state.messages = [];
+  closeHistoryMenu();
   welcomeState.classList.remove('hidden');
   chatState.classList.add('hidden');
   messagesEl.innerHTML = '';
@@ -302,7 +309,77 @@ function executeAction(actionId) {
   const action = ACTIONS.find(a => a.id === actionId);
   if (!action) return;
   userInput.value = action.prompt;
-  handleSend();
+  handleSend({ action });
+}
+
+function getActionById(actionId) {
+  if (!actionId) return null;
+  return ACTIONS.find((a) => a.id === actionId) || null;
+}
+
+function truncateText(text, max = 80) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max - 1)}…`;
+}
+
+function getHistoryEntries() {
+  const entries = [];
+  for (let i = 0; i < state.messages.length; i++) {
+    const msg = state.messages[i];
+    if (!msg || msg.role !== 'user' || !msg.content) continue;
+    const action = getActionById(msg.actionId);
+    entries.push({
+      messageIndex: i,
+      label: action ? action.label : truncateText(msg.content),
+      iconHtml: action
+        ? action.icon
+        : '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    });
+  }
+  return entries;
+}
+
+function closeHistoryMenu() {
+  historyMenuEl.classList.add('hidden');
+}
+
+function updateHistoryDropdownUI() {
+  const entries = getHistoryEntries();
+  if (entries.length === 0) {
+    headerTitleEl.classList.remove('hidden');
+    historyDropdownEl.classList.add('hidden');
+    closeHistoryMenu();
+    return;
+  }
+
+  headerTitleEl.classList.add('hidden');
+  historyDropdownEl.classList.remove('hidden');
+
+  const latest = entries[entries.length - 1];
+  historyToggleBtn.innerHTML = `${latest.iconHtml}<span class="history-label">${escapeHtml(latest.label)}</span>`;
+
+  historyMenuEl.innerHTML = entries
+      .map((entry) => (
+          `<button class="history-menu-item" data-message-index="${entry.messageIndex}">` +
+          `<span class="history-item-icon">${entry.iconHtml}</span>` +
+          `<span class="history-item-label">${escapeHtml(entry.label)}</span>` +
+          '</button>'
+      ))
+      .join('');
+
+  historyMenuEl.querySelectorAll('.history-menu-item').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.messageIndex);
+      const msgEl = messagesEl.querySelector(`.message[data-index="${idx}"]`);
+      if (msgEl) {
+        shouldAutoScroll = false;
+        msgEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      updateScrollToBottomButton();
+      closeHistoryMenu();
+    });
+  });
 }
 
 // ========== Message Rendering ==========
@@ -321,7 +398,18 @@ function renderMessage(message, index) {
   bubble.className = 'message-bubble';
 
   if (message.role === 'user') {
-    bubble.textContent = message.content;
+    const action = getActionById(message.actionId);
+    if (action) {
+      el.classList.add('message-user-action');
+      bubble.innerHTML = [
+        '<details class="user-action-message">',
+        `<summary class="user-action-summary"><span class="user-action-icon">${action.icon}</span><span class="user-action-label">${escapeHtml(action.label)}</span><span class="user-action-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span></summary>`,
+        `<div class="user-action-text">${escapeHtml(message.content)}</div>`,
+        '</details>',
+      ].join('');
+    } else {
+      bubble.textContent = message.content;
+    }
   } else if (message.role === 'assistant') {
     bubble.innerHTML = renderMarkdown(message.content);
   } else if (message.role === 'notice') {
@@ -367,6 +455,7 @@ function appendMessage(message) {
   const el = renderMessage(message, state.messages.length - 1);
   messagesEl.appendChild(el);
   scrollToBottom();
+  updateHistoryDropdownUI();
   saveTabState();
 }
 
@@ -412,7 +501,7 @@ function checkApiKey() {
 }
 
 // ========== Send & Stream ==========
-function handleSend() {
+function handleSend(meta = {}) {
   const text = userInput.value.trim();
   if (!text || activeStreams.has(state.currentTabId)) return;
 
@@ -428,7 +517,12 @@ function handleSend() {
 
   if (state.mode === 'welcome') switchToChat();
 
-  appendMessage({ role: 'user', content: text });
+  const userMessage = { role: 'user', content: text };
+  if (meta?.action?.id) {
+    userMessage.actionId = meta.action.id;
+    userMessage.actionLabel = meta.action.label;
+  }
+  appendMessage(userMessage);
   userInput.value = '';
   autoResize();
 
@@ -627,6 +721,8 @@ async function startStreaming() {
     .map(m => {
       const o = { role: m.role, content: m.content };
       if (m.thinking) o.thinking = m.thinking;
+      if (m.role === 'user' && m.actionId) o.actionId = m.actionId;
+      if (m.role === 'user' && m.actionLabel) o.actionLabel = m.actionLabel;
       return o;
     });
 
@@ -678,6 +774,7 @@ function finishStream(tabId, aborted) {
 
     saveTabState();
     updateScrollToBottomButton();
+    updateHistoryDropdownUI();
     userInput.focus();
   }
 }
@@ -718,6 +815,13 @@ function bindEvents() {
   settingsBtn.addEventListener('click', () => browser.runtime.openOptionsPage());
   languageToggleBtn.addEventListener('click', () => {
     void toggleResponseLanguage();
+  });
+  historyToggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    historyMenuEl.classList.toggle('hidden');
+  });
+  document.addEventListener('click', (e) => {
+    if (!historyDropdownEl.contains(e.target)) closeHistoryMenu();
   });
   messagesEl.addEventListener('scroll', handleMessagesScroll);
   scrollToBottomBtn.addEventListener('click', () => {
@@ -798,6 +902,10 @@ function cloneChatMessages(messages) {
     .map(msg => {
       const cloned = { role: msg.role, content: typeof msg.content === 'string' ? msg.content : '' };
       if (typeof msg.thinking === 'string' && msg.thinking) cloned.thinking = msg.thinking;
+      if (msg.role === 'user') {
+        if (typeof msg.actionId === 'string' && msg.actionId) cloned.actionId = msg.actionId;
+        if (typeof msg.actionLabel === 'string' && msg.actionLabel) cloned.actionLabel = msg.actionLabel;
+      }
       if (msg.role === 'notice') {
         if (typeof msg.noticeKey === 'string') cloned.noticeKey = msg.noticeKey;
         if (typeof msg.signature === 'string') cloned.signature = msg.signature;

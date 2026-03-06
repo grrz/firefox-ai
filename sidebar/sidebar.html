@@ -8,7 +8,13 @@
 <body>
   <!-- Header -->
   <div class="header">
-    <span class="header-title">AI Chat</span>
+    <div class="header-title-wrap">
+      <span id="headerTitle" class="header-title">AI Chat</span>
+      <div id="historyDropdown" class="history-dropdown hidden">
+        <button id="historyToggleBtn" class="history-toggle-btn" title="Chat requests history" aria-label="Chat requests history"></button>
+        <div id="historyMenu" class="history-menu hidden"></div>
+      </div>
+    </div>
     <div class="header-actions">
       <button id="languageToggleBtn" class="lang-toggle-btn" title="Response language: English">EN</button>
       <button id="newChatBtn" class="icon-btn" title="New Chat">
@@ -50,7 +56,7 @@
   <!-- Input Area -->
   <div class="input-area">
     <div class="input-wrapper">
-      <textarea id="userInput" placeholder="Ask about this page..." rows="1"></textarea>
+      <label for="userInput"></label><textarea id="userInput" placeholder="Ask about this page..." rows="1"></textarea>
       <button id="sendBtn" class="send-btn" title="Send">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>
