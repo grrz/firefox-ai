@@ -1,6 +1,6 @@
 import {renderMarkdown, renderPartialMarkdown} from './lib/markdown.js';
 import {ACTIONS} from '../shared/actions.js';
-import {loadSettings} from '../shared/settings.js';
+import {loadSettings, saveSettings} from '../shared/settings.js';
 import {PROVIDERS} from '../shared/constants.js';
 
 const PAGE_CHATS_STORAGE_KEY = 'pageChatsByUrl';
@@ -38,6 +38,7 @@ const sendBtn = $('#sendBtn');
 const stopBtn = $('#stopBtn');
 const newChatBtn = $('#newChatBtn');
 const settingsBtn = $('#settingsBtn');
+const languageToggleBtn = $('#languageToggleBtn');
 const loadingOverlay = $('#loadingOverlay');
 const pageTitleEl = $('#pageTitle');
 const pageWordCountEl = $('#pageWordCount');
@@ -45,6 +46,7 @@ const pageWordCountEl = $('#pageWordCount');
 // ========== Initialization ==========
 async function init() {
   state.settings = await loadSettings();
+  updateLanguageToggleUI();
   renderActionCards();
   bindEvents();
 
@@ -128,7 +130,7 @@ function rebuildUI() {
     chatState.classList.remove('hidden');
     for (let i = 0; i < state.messages.length; i++) {
       const msg = state.messages[i];
-      if (msg.role === 'user' || msg.role === 'assistant') {
+      if (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'notice') {
         const el = renderMessage(msg, i);
         if (msg.role === 'assistant') {
           const bubble = el.querySelector('.message-bubble');
@@ -161,6 +163,32 @@ function updatePageInfo() {
     pageTitleEl.textContent = 'Loading page info...';
     pageWordCountEl.textContent = '';
   }
+}
+
+function getResponseLanguage() {
+  return state.settings?.responseLanguage === 'ru' ? 'ru' : 'en';
+}
+
+function updateLanguageToggleUI() {
+  if (!languageToggleBtn) return;
+  const lang = getResponseLanguage();
+  languageToggleBtn.dataset.lang = lang;
+  languageToggleBtn.textContent = lang.toUpperCase();
+  const langName = lang === 'ru' ? 'Russian' : 'English';
+  languageToggleBtn.title = `Response language: ${langName}`;
+  languageToggleBtn.setAttribute('aria-label', `Response language: ${langName}`);
+}
+
+async function toggleResponseLanguage() {
+  const current = getResponseLanguage();
+  const next = current === 'en' ? 'ru' : 'en';
+  const nextSettings = {
+    ...state.settings,
+    responseLanguage: next,
+  };
+  await saveSettings(nextSettings);
+  state.settings = nextSettings;
+  updateLanguageToggleUI();
 }
 
 async function handleTabChange(tabId) {
@@ -657,6 +685,9 @@ function bindEvents() {
   stopBtn.addEventListener('click', abortStreaming);
   newChatBtn.addEventListener('click', switchToWelcome);
   settingsBtn.addEventListener('click', () => browser.runtime.openOptionsPage());
+  languageToggleBtn.addEventListener('click', () => {
+    void toggleResponseLanguage();
+  });
 
   userInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -671,6 +702,7 @@ function bindEvents() {
   browser.storage.onChanged.addListener((changes, area) => {
     if (area === 'sync' && changes.settings) {
       state.settings = changes.settings.newValue;
+      updateLanguageToggleUI();
     }
   });
 

@@ -65,7 +65,33 @@ body {
 
 .header-actions {
   display: flex;
+  align-items: center;
   gap: 4px;
+}
+
+.lang-toggle-btn {
+  height: 26px;
+  min-width: 38px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+
+.lang-toggle-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.lang-toggle-btn[data-lang="ru"] {
+  background: var(--accent-light);
+  border-color: color-mix(in srgb, var(--accent) 45%, Canvas);
+  color: var(--text-primary);
 }
 
 .icon-btn {
@@ -463,9 +489,9 @@ body {
 
 /* ========== Input Area ========== */
 .input-area {
-  padding: 8px 12px 12px;
+  padding: 8px;
   border-top: 1px solid var(--border-color);
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   flex-shrink: 0;
 }
 
@@ -473,7 +499,8 @@ body {
   display: flex;
   align-items: flex-end;
   gap: 6px;
-  background: var(--bg-secondary);
+  /*background: var(--bg-secondary);*/
+  background: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 4px 4px 4px 12px;

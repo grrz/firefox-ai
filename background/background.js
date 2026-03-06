@@ -4,6 +4,9 @@ import {OpenAIProvider} from './providers/openai.js';
 import {ClaudeProvider} from './providers/claude.js';
 import {LMStudioProvider} from './providers/lmstudio.js';
 
+const PAGE_CHATS_STORAGE_KEY = 'pageChatsByUrl';
+const MAX_SAVED_PAGE_CHATS = 50;
+
 function createProvider(settings) {
   const config = getProviderConfig(settings);
   switch (settings.activeProvider) {
@@ -25,7 +28,10 @@ function buildChatMessages(messages, pageContext, settings) {
 
   let systemContent = SYSTEM_PROMPT;
   const selectedLanguage = RESPONSE_LANGUAGES[settings?.responseLanguage] || RESPONSE_LANGUAGES.en;
-  systemContent += `\n\nAlways answer in ${selectedLanguage}.`;
+  systemContent += `\n\nCRITICAL OUTPUT RULE: Write your final answer only in ${selectedLanguage}.`;
+  systemContent += `\nDo not switch to another language even if the user writes in another language.`;
+  systemContent += `\nIf source content is in another language, translate or summarize it into ${selectedLanguage}.`;
+  systemContent += '\nShort quotes may stay in the original language, but all explanations must remain in the required language.';
   if (pageContext?.textContent) {
     systemContent += `\n\n--- PAGE CONTEXT ---\n${pageContext.textContent}\n--- END PAGE CONTEXT ---`;
   }
@@ -36,6 +42,12 @@ function buildChatMessages(messages, pageContext, settings) {
     if (msg.thinking) m.thinking = msg.thinking;
     chatMessages.push(m);
   }
+
+  // Keep a final explicit reminder at the end of the prompt stack.
+  chatMessages.push({
+    role: 'system',
+    content: `Final reminder: reply only in ${selectedLanguage}.`,
+  });
 
   return chatMessages;
 }
@@ -52,6 +64,52 @@ function mergeContextLimits(allLimitEntries) {
     applied: details.length > 0,
     details,
   };
+}
+
+function normalizePageUrl(rawUrl) {
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function clonePersistableMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter((msg) => msg && (msg.role === 'user' || msg.role === 'assistant') && typeof msg.content === 'string')
+    .map((msg) => {
+      const cloned = { role: msg.role, content: msg.content };
+      if (typeof msg.thinking === 'string' && msg.thinking) cloned.thinking = msg.thinking;
+      return cloned;
+    });
+}
+
+function trimPersistedChats(chatsByPage) {
+  const entries = Object.entries(chatsByPage);
+  entries.sort((a, b) => (b[1]?.updatedAt || 0) - (a[1]?.updatedAt || 0));
+  return Object.fromEntries(entries.slice(0, MAX_SAVED_PAGE_CHATS));
+}
+
+async function persistChatForPage(pageKey, messages, pageContext) {
+  if (!pageKey) return;
+  const saved = await browser.storage.local.get(PAGE_CHATS_STORAGE_KEY);
+  const chatsByPage = (saved?.[PAGE_CHATS_STORAGE_KEY] && typeof saved[PAGE_CHATS_STORAGE_KEY] === 'object')
+    ? saved[PAGE_CHATS_STORAGE_KEY]
+    : {};
+
+  chatsByPage[pageKey] = {
+    mode: 'chat',
+    messages: clonePersistableMessages(messages),
+    pageContext: pageContext || null,
+    updatedAt: Date.now(),
+  };
+
+  await browser.storage.local.set({ [PAGE_CHATS_STORAGE_KEY]: trimPersistedChats(chatsByPage) });
 }
 
 async function getDistilledContentForActiveTab() {
@@ -80,7 +138,7 @@ async function getDistilledContentForActiveTab() {
         { type: 'distill', options: { includeIframes: false } },
         { frameId: frame.frameId }
       );
-      if (data && !data.error && data.textContent) {
+      if (data && !data.error) {
         frameResponses.push({
           frameId: frame.frameId,
           url: frame.url || data.url || '',
@@ -108,8 +166,9 @@ async function getDistilledContentForActiveTab() {
   const MAX_CHILD_FRAMES = 8;
   const includedChildFrames = childFrames.slice(0, MAX_CHILD_FRAMES);
 
-  const parts = [topFrame.data.textContent];
+  const parts = [topFrame.data.textContent || ''];
   for (const frame of includedChildFrames) {
+    if (!frame.data.textContent) continue;
     const sectionTitle = frame.data.title || frame.url || `Frame ${frame.frameId}`;
     parts.push(`## Embedded frame: ${sectionTitle}\n\n${frame.data.textContent}`);
   }
@@ -133,7 +192,8 @@ async function getDistilledContentForActiveTab() {
 
   return {
     title: topFrame.data.title || tabs[0].title || '',
-    url: topFrame.data.url || tabs[0].url || '',
+    // Keep chat persistence key stable per browser tab URL, not iframe URL.
+    url: tabs[0].url || topFrame.data.url || '',
     description: topFrame.data.description || '',
     textContent,
     wordCount,
@@ -146,6 +206,10 @@ browser.runtime.onConnect.addListener((port) => {
   if (port.name !== 'ai-chat') return;
 
   let abortController = null;
+  let requestMessages = [];
+  let requestPageContext = null;
+  let streamedText = '';
+  let streamedThinking = '';
 
   port.onMessage.addListener(async (message) => {
     if (message.type === 'abort') {
@@ -156,6 +220,10 @@ browser.runtime.onConnect.addListener((port) => {
     if (message.type === 'chat') {
       abortController = new AbortController();
       const { messages, pageContext } = message;
+      requestMessages = Array.isArray(messages) ? messages : [];
+      requestPageContext = pageContext || null;
+      streamedText = '';
+      streamedThinking = '';
 
       try {
         const settings = await loadSettings();
@@ -174,6 +242,7 @@ browser.runtime.onConnect.addListener((port) => {
         await provider.sendMessage(chatMessages, {
           signal: abortController.signal,
           onThinkingToken: (token) => {
+            streamedThinking += token;
             try {
               port.postMessage({ type: 'stream_thinking', token });
             } catch {
@@ -181,6 +250,7 @@ browser.runtime.onConnect.addListener((port) => {
             }
           },
           onToken: (token) => {
+            streamedText += token;
             try {
               port.postMessage({ type: 'stream_token', token });
             } catch {
@@ -189,6 +259,14 @@ browser.runtime.onConnect.addListener((port) => {
             }
           },
         });
+
+        if (streamedText) {
+          const pageKey = normalizePageUrl(requestPageContext?.url);
+          const assistantMessage = { role: 'assistant', content: streamedText };
+          if (streamedThinking) assistantMessage.thinking = streamedThinking;
+          const fullMessages = [...requestMessages, assistantMessage];
+          await persistChatForPage(pageKey, fullMessages, requestPageContext);
+        }
 
         port.postMessage({ type: 'stream_end' });
       } catch (err) {
