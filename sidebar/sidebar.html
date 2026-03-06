@@ -38,7 +38,12 @@
 
   <!-- Chat State -->
   <div id="chatState" class="chat-state hidden">
-    <div id="messages" class="messages"></div>
+    <div class="messages-wrap">
+      <div id="messages" class="messages"></div>
+      <button id="scrollToBottomBtn" class="scroll-to-bottom-btn hidden" title="Scroll to latest" aria-label="Scroll to latest">
+        ↓
+      </button>
+    </div>
     <div id="actionBar" class="action-bar"></div>
   </div>
 

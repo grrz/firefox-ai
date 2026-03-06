@@ -5,6 +5,7 @@ import {PROVIDERS} from '../shared/constants.js';
 
 const PAGE_CHATS_STORAGE_KEY = 'pageChatsByUrl';
 const MAX_SAVED_PAGE_CHATS = 50;
+const SCROLL_BOTTOM_THRESHOLD_PX = 24;
 
 // ========== State ==========
 
@@ -25,6 +26,7 @@ let persistQueue = Promise.resolve();
 // Active streams that keep running even when their tab isn't displayed.
 // Keyed by tabId → { port, streamedText, streamedThinking, thinkingStartTime, thinkingElapsed, tabId }
 const activeStreams = new Map();
+let shouldAutoScroll = true;
 
 // ========== DOM References ==========
 const $ = (sel) => document.querySelector(sel);
@@ -33,6 +35,7 @@ const chatState = $('#chatState');
 const messagesEl = $('#messages');
 const actionCardsEl = $('#actionCards');
 const actionBarEl = $('#actionBar');
+const scrollToBottomBtn = $('#scrollToBottomBtn');
 const userInput = $('#userInput');
 const sendBtn = $('#sendBtn');
 const stopBtn = $('#stopBtn');
@@ -120,6 +123,8 @@ function rebuildUI() {
   autoResize();
   messagesEl.innerHTML = '';
   actionBarEl.innerHTML = '';
+  shouldAutoScroll = true;
+  updateScrollToBottomButton();
 
   // Reset button state (streaming tabs override this after rebuildUI)
   sendBtn.classList.remove('hidden');
@@ -140,7 +145,7 @@ function rebuildUI() {
       }
     }
     renderActionBar();
-    scrollToBottom();
+    scrollToBottom(true);
   } else {
     welcomeState.classList.remove('hidden');
     chatState.classList.add('hidden');
@@ -250,6 +255,8 @@ function switchToWelcome() {
   chatState.classList.add('hidden');
   messagesEl.innerHTML = '';
   actionBarEl.innerHTML = '';
+  shouldAutoScroll = true;
+  updateScrollToBottomButton();
   userInput.value = '';
   autoResize();
   sendBtn.classList.remove('hidden');
@@ -363,8 +370,30 @@ function appendMessage(message) {
   saveTabState();
 }
 
-function scrollToBottom() {
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+function getDistanceFromBottom() {
+  return Math.max(0, messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight);
+}
+
+function isNearBottom() {
+  return getDistanceFromBottom() <= SCROLL_BOTTOM_THRESHOLD_PX;
+}
+
+function updateScrollToBottomButton() {
+  const isFarFromBottom = getDistanceFromBottom() > messagesEl.clientHeight;
+  scrollToBottomBtn.classList.toggle('hidden', !isFarFromBottom);
+}
+
+function handleMessagesScroll() {
+  shouldAutoScroll = isNearBottom();
+  updateScrollToBottomButton();
+}
+
+function scrollToBottom(force = false) {
+  if (force || shouldAutoScroll) {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (force) shouldAutoScroll = true;
+  }
+  updateScrollToBottomButton();
 }
 
 // ========== Pre-flight Checks ==========
@@ -505,6 +534,7 @@ function createStreamingElement(stream) {
 
   streamEl.appendChild(bubble);
   messagesEl.appendChild(streamEl);
+  updateScrollToBottomButton();
 }
 
 /**
@@ -647,6 +677,7 @@ function finishStream(tabId, aborted) {
     }
 
     saveTabState();
+    updateScrollToBottomButton();
     userInput.focus();
   }
 }
@@ -687,6 +718,11 @@ function bindEvents() {
   settingsBtn.addEventListener('click', () => browser.runtime.openOptionsPage());
   languageToggleBtn.addEventListener('click', () => {
     void toggleResponseLanguage();
+  });
+  messagesEl.addEventListener('scroll', handleMessagesScroll);
+  scrollToBottomBtn.addEventListener('click', () => {
+    shouldAutoScroll = true;
+    scrollToBottom(true);
   });
 
   userInput.addEventListener('keydown', (e) => {

@@ -198,13 +198,60 @@ body {
   overflow: hidden;
 }
 
+.messages-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, CanvasText 25%, Canvas) transparent;
+}
+
+.messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.messages::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, CanvasText 25%, Canvas);
+  border-radius: 8px;
+}
+
+.messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll-to-bottom-btn {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  z-index: 2;
+}
+
+.scroll-to-bottom-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
 }
 
 .message {
@@ -523,6 +570,21 @@ body {
   resize: none;
   max-height: 120px;
   padding: 6px 0;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, CanvasText 25%, Canvas) transparent;
+}
+
+#userInput::-webkit-scrollbar {
+  width: 6px;
+}
+
+#userInput::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, CanvasText 25%, Canvas);
+  border-radius: 8px;
+}
+
+#userInput::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 #userInput::placeholder {
