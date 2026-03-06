@@ -20,6 +20,24 @@ const savedChatsMetaEl = $('#savedChatsMeta');
 const savedChatsFilterEl = $('#savedChatsFilter');
 const saveBtnEl = $('#save');
 const statusEl = $('#status');
+const tabAgentEl = $('#tabAgent');
+const tabChatsEl = $('#tabChats');
+const panelAgentEl = $('#panelAgent');
+const panelChatsEl = $('#panelChats');
+
+function setActiveTab(tab) {
+  const isAgent = tab !== 'chats';
+  document.body.classList.toggle('tab-chats', !isAgent);
+  tabAgentEl.classList.toggle('active', isAgent);
+  tabAgentEl.setAttribute('aria-selected', isAgent ? 'true' : 'false');
+  panelAgentEl.classList.toggle('active', isAgent);
+  panelAgentEl.hidden = !isAgent;
+
+  tabChatsEl.classList.toggle('active', !isAgent);
+  tabChatsEl.setAttribute('aria-selected', !isAgent ? 'true' : 'false');
+  panelChatsEl.classList.toggle('active', !isAgent);
+  panelChatsEl.hidden = isAgent;
+}
 
 function showProviderConfig(providerId) {
   document.querySelectorAll('.provider-config').forEach(el => {
@@ -147,6 +165,8 @@ activeProviderEl.addEventListener('change', (e) => {
 });
 
 saveBtnEl.addEventListener('click', saveForm);
+tabAgentEl.addEventListener('click', () => setActiveTab('agent'));
+tabChatsEl.addEventListener('click', () => setActiveTab('chats'));
 savedChatsFilterEl.addEventListener('input', (e) => {
   savedChatsFilterValue = e.target.value.trim().toLowerCase();
   void renderSavedChats();
@@ -159,3 +179,4 @@ browser.storage.onChanged.addListener((changes, area) => {
 });
 
 loadForm();
+setActiveTab('agent');

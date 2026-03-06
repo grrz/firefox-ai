@@ -385,10 +385,6 @@
     return comments.slice(0, 50);
   }
 
-  function buildTextContent(data) {
-    return buildTextContentWithSources(data).textContent;
-  }
-
   function normalizeTextForMatch(text) {
     return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
   }

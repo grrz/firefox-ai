@@ -7,83 +7,92 @@
 </head>
 <body>
   <div class="container">
-    <section class="setting-group">
-      <h2>AI Provider</h2>
-      <div class="field">
-        <label for="activeProvider"></label>
-        <select id="activeProvider">
-          <option value="claude">Claude (Anthropic)</option>
-          <option value="openai">OpenAI</option>
-          <option value="grok">Grok (xAI)</option>
-          <option value="lmstudio">LM Studio (Local)</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="responseLanguage">Response Language</label>
-        <select id="responseLanguage">
-          <option value="en">English</option>
-          <option value="ru">Russian</option>
-        </select>
-      </div>
-    </section>
+    <div class="tabs" role="tablist" aria-label="Settings sections">
+      <button id="tabAgent" class="tab-btn active" role="tab" aria-selected="true" aria-controls="panelAgent">AI Provider</button>
+      <button id="tabChats" class="tab-btn" role="tab" aria-selected="false" aria-controls="panelChats">Saved Chats</button>
+    </div>
 
-    <section class="setting-group provider-config" data-provider="claude">
-      <h2>Claude Settings</h2>
-      <div class="field">
-        <label for="claude-apiKey">API Key</label>
-        <input type="password" id="claude-apiKey" placeholder="sk-ant-...">
-      </div>
-      <div class="field">
-        <label for="claude-model">Model</label>
-        <input type="text" id="claude-model" placeholder="claude-sonnet-4-20250514">
-      </div>
-    </section>
+    <div class="panels">
+      <section id="panelAgent" class="panel active" role="tabpanel" aria-labelledby="tabAgent">
+        <section class="setting-group">
+          <div class="field">
+            <label for="activeProvider"></label>
+            <select id="activeProvider">
+              <option value="claude">Claude (Anthropic)</option>
+              <option value="openai">OpenAI</option>
+              <option value="grok">Grok (xAI)</option>
+              <option value="lmstudio">LM Studio (Local)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="responseLanguage">Response Language</label>
+            <select id="responseLanguage">
+              <option value="en">English</option>
+              <option value="ru">Russian</option>
+            </select>
+          </div>
+        </section>
 
-    <section class="setting-group provider-config" data-provider="openai">
-      <h2>OpenAI Settings</h2>
-      <div class="field">
-        <label for="openai-apiKey">API Key</label>
-        <input type="password" id="openai-apiKey" placeholder="sk-...">
-      </div>
-      <div class="field">
-        <label for="openai-model">Model</label>
-        <input type="text" id="openai-model" placeholder="gpt-4o">
-      </div>
-    </section>
+        <section class="setting-group provider-config" data-provider="claude">
+          <h2>Claude Settings</h2>
+          <div class="field">
+            <label for="claude-apiKey">API Key</label>
+            <input type="password" id="claude-apiKey" placeholder="sk-ant-...">
+          </div>
+          <div class="field">
+            <label for="claude-model">Model</label>
+            <input type="text" id="claude-model" placeholder="claude-sonnet-4-20250514">
+          </div>
+        </section>
 
-    <section class="setting-group provider-config" data-provider="grok">
-      <h2>Grok Settings</h2>
-      <div class="field">
-        <label for="grok-apiKey">API Key</label>
-        <input type="password" id="grok-apiKey" placeholder="xai-...">
-      </div>
-      <div class="field">
-        <label for="grok-model">Model</label>
-        <input type="text" id="grok-model" placeholder="grok-3">
-      </div>
-    </section>
+        <section class="setting-group provider-config" data-provider="openai">
+          <h2>OpenAI Settings</h2>
+          <div class="field">
+            <label for="openai-apiKey">API Key</label>
+            <input type="password" id="openai-apiKey" placeholder="sk-...">
+          </div>
+          <div class="field">
+            <label for="openai-model">Model</label>
+            <input type="text" id="openai-model" placeholder="gpt-4o">
+          </div>
+        </section>
 
-    <section class="setting-group provider-config" data-provider="lmstudio">
-      <h2>LM Studio Settings</h2>
-      <div class="field">
-        <label for="lmstudio-endpoint">Endpoint</label>
-        <input type="text" id="lmstudio-endpoint" placeholder="http://localhost:1234">
-      </div>
-      <div class="field">
-        <label for="lmstudio-model">Model (optional)</label>
-        <input type="text" id="lmstudio-model" placeholder="Leave empty for default">
-      </div>
-    </section>
+        <section class="setting-group provider-config" data-provider="grok">
+          <h2>Grok Settings</h2>
+          <div class="field">
+            <label for="grok-apiKey">API Key</label>
+            <input type="password" id="grok-apiKey" placeholder="xai-...">
+          </div>
+          <div class="field">
+            <label for="grok-model">Model</label>
+            <input type="text" id="grok-model" placeholder="grok-3">
+          </div>
+        </section>
 
-    <section class="setting-group">
-      <h2>Saved Chats</h2>
-      <div class="field">
-        <label for="savedChatsFilter"></label>
-        <input type="text" id="savedChatsFilter" placeholder="Type to filter URLs...">
-      </div>
-      <div id="savedChatsMeta" class="saved-chats-meta"></div>
-      <div id="savedChatsList" class="saved-chats-list"></div>
-    </section>
+        <section class="setting-group provider-config" data-provider="lmstudio">
+          <h2>LM Studio Settings</h2>
+          <div class="field">
+            <label for="lmstudio-endpoint">Endpoint</label>
+            <input type="text" id="lmstudio-endpoint" placeholder="http://localhost:1234">
+          </div>
+          <div class="field">
+            <label for="lmstudio-model">Model (optional)</label>
+            <input type="text" id="lmstudio-model" placeholder="Leave empty for default">
+          </div>
+        </section>
+      </section>
+
+      <section id="panelChats" class="panel" role="tabpanel" aria-labelledby="tabChats" hidden>
+        <section class="setting-group">
+          <div class="field">
+            <label for="savedChatsFilter"></label>
+            <input type="text" id="savedChatsFilter" placeholder="Type to filter URLs...">
+          </div>
+          <div id="savedChatsMeta" class="saved-chats-meta"></div>
+          <div id="savedChatsList" class="saved-chats-list"></div>
+        </section>
+      </section>
+    </div>
 
     <div class="actions">
       <button id="save" class="btn-primary">Save Settings</button>

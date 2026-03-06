@@ -10,14 +10,14 @@ body {
   color-scheme: light dark;
   background: Canvas;
   color: CanvasText;
+  padding: 10px;
 }
 
 .container {
-  max-width: 600px;
-  margin: 2rem auto;
-  /*padding: 2rem;*/
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  margin: 0 auto;
+  /*border-radius: 12px;*/
+  /*box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);*/
 }
 
 h1 {
@@ -33,12 +33,59 @@ h2 {
   color: GrayText;
 }
 
-.setting-group {
-  padding: 1rem;
-  margin-bottom: 1rem;
-  background: color-mix(in srgb, CanvasText 5%, Canvas);
-  border-radius: 8px;
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.tab-btn {
   border: 1px solid color-mix(in srgb, CanvasText 15%, Canvas);
+  border-radius: 999px;
+  background: color-mix(in srgb, CanvasText 3%, Canvas);
+  color: CanvasText;
+  padding: 6px 12px;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.tab-btn.active {
+  border-color: AccentColor;
+  background: color-mix(in srgb, AccentColor 14%, Canvas);
+}
+
+.panels {
+  min-height: 0;
+}
+
+.panel {
+  min-height: 0;
+}
+
+.panel:not(.active) {
+  display: none;
+}
+
+#panelChats {
+  display: flex;
+  flex-direction: column;
+}
+
+#panelChats[hidden],
+#panelAgent[hidden] {
+  display: none !important;
+}
+
+#panelChats .setting-group {
+  display: block;
+}
+
+.setting-group {
+  /*padding: 1rem;*/
+  margin-bottom: 1rem;
+  /*background: color-mix(in srgb, CanvasText 5%, Canvas);*/
+  /*border-radius: 8px;*/
+  /*border: 1px solid color-mix(in srgb, CanvasText 15%, Canvas);*/
 }
 
 .provider-config {
@@ -84,7 +131,14 @@ input:focus, select:focus {
   display: flex;
   align-items: center;
   gap: 1rem;
-  margin-top: 1.5rem;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, CanvasText 12%, Canvas);
+  flex-shrink: 0;
+}
+
+body.tab-chats .actions {
+  display: none;
 }
 
 .btn-primary {
@@ -117,6 +171,9 @@ input:focus, select:focus {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
 }
 
 .saved-chat-item {
