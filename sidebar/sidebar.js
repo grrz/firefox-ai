@@ -16,6 +16,7 @@ const state = {
   pageContext: null,
   technicalAnalysisMode: false,
   settings: null,
+  currentWindowId: null,
   currentTabId: null,
   currentPageKey: null,
 };
@@ -66,6 +67,7 @@ async function init() {
 
   const tabs = await browser.tabs.query({ active: true, currentWindow: true });
   if (tabs[0]) {
+    state.currentWindowId = tabs[0].windowId ?? null;
     state.currentTabId = tabs[0].id;
     state.currentPageKey = normalizePageUrl(tabs[0].url);
     await restoreTabState(state.currentTabId);
@@ -244,11 +246,13 @@ async function handleTabChange(tabId) {
 
 // ========== Page Context ==========
 async function fetchPageContext(retries = 2) {
+  if (state.currentTabId == null) return;
   try {
     loadingOverlay.classList.remove('hidden');
     const freshContext = await Promise.race([
       browser.runtime.sendMessage({
         type: 'getDistilledContent',
+        tabId: state.currentTabId,
         options: { includeTechnicalContext: !!state.technicalAnalysisMode },
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
@@ -641,9 +645,11 @@ async function scrollToSourceFromChat(sourceId) {
   if (!id) return;
   const anchor = getSourceAnchorsMap()[id];
   if (!anchor?.selector) return;
+  if (state.currentTabId == null) return;
   try {
     await browser.runtime.sendMessage({
       type: 'scrollToSource',
+      tabId: state.currentTabId,
       selector: anchor.selector,
       snippet: anchor.snippet || '',
       occurrence: Number(anchor.occurrence) || 1,
@@ -957,6 +963,7 @@ async function startStreaming() {
   try {
     const freshContext = await browser.runtime.sendMessage({
       type: 'getDistilledContent',
+      tabId,
       options: { includeTechnicalContext: !!state.technicalAnalysisMode },
     });
     if (freshContext && !freshContext.error) {
@@ -1195,12 +1202,14 @@ function bindEvents() {
   });
 
   // Tab switch — save current state, restore new tab (streams keep running)
-  browser.tabs.onActivated.addListener(({ tabId }) => {
+  browser.tabs.onActivated.addListener(({ tabId, windowId }) => {
+    if (state.currentWindowId == null || windowId !== state.currentWindowId) return;
     void handleTabChange(tabId);
   });
 
   // In-tab navigation — switch to chat that belongs to the new page URL
   browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (state.currentWindowId != null && tab?.windowId !== state.currentWindowId) return;
     if (tabId === state.currentTabId && changeInfo.status === 'complete') {
       const nextPageKey = normalizePageUrl(tab?.url);
       if (nextPageKey !== state.currentPageKey) {

@@ -138,12 +138,15 @@ async function persistChatForPage(pageKey, messages, pageContext, chatOptions = 
   await browser.storage.local.set({ [PAGE_CHATS_STORAGE_KEY]: trimPersistedChats(chatsByPage) });
 }
 
-async function getDistilledContentForActiveTab(options = {}) {
+async function getDistilledContentForTab(tabId, options = {}) {
   const includeTechnicalContext = !!options.includeTechnicalContext;
-  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-  if (!tabs[0]) return { error: 'No active tab' };
-
-  const tabId = tabs[0].id;
+  if (tabId == null) return { error: 'No tab specified' };
+  let tab;
+  try {
+    tab = await browser.tabs.get(tabId);
+  } catch {
+    return { error: 'Tab not found' };
+  }
   const frameResponses = [];
   let frames;
 
@@ -192,7 +195,7 @@ async function getDistilledContentForActiveTab(options = {}) {
   if (frameResponses.length === 0) {
     return {
       title: '',
-      url: tabs[0].url || '',
+      url: tab.url || '',
       textContent: '',
       wordCount: 0,
       error: 'Could not access page content. The page may not be fully loaded.',
@@ -230,9 +233,9 @@ async function getDistilledContentForActiveTab(options = {}) {
   const wordCount = textContent.split(/\s+/).filter(Boolean).length;
 
   return {
-    title: topFrame.data.title || tabs[0].title || '',
+    title: topFrame.data.title || tab.title || '',
     // Keep chat persistence key stable per browser tab URL, not iframe URL.
-    url: tabs[0].url || topFrame.data.url || '',
+    url: tab.url || topFrame.data.url || '',
     description: topFrame.data.description || '',
     textContent,
     wordCount,
@@ -350,7 +353,7 @@ browser.runtime.onConnect.addListener((port) => {
 browser.runtime.onMessage.addListener(async (message) => {
   if (message.type === 'getDistilledContent') {
     try {
-      return await getDistilledContentForActiveTab({
+      return await getDistilledContentForTab(message.tabId, {
         includeTechnicalContext: !!message?.options?.includeTechnicalContext,
       });
     } catch (err) {
@@ -370,10 +373,10 @@ browser.runtime.onMessage.addListener(async (message) => {
 
   if (message.type === 'scrollToSource') {
     try {
-      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-      if (!tabs[0]?.id) return { ok: false, error: 'No active tab' };
+      const tabId = message.tabId;
+      if (tabId == null) return { ok: false, error: 'No tab specified' };
       return await browser.tabs.sendMessage(
-        tabs[0].id,
+        tabId,
         {
           type: 'scrollToSource',
           selector: message.selector,
