@@ -43,6 +43,7 @@ function buildChatMessages(messages, pageContext, settings, options = {}) {
     systemContent += '\nWhen the user asks implementation/debugging questions, use the TECHNICAL CONTEXT section.';
     systemContent += '\nIf a requested technical detail is not present there, say that explicitly instead of guessing.';
   }
+  systemContent += `\n\nFinal reminder: reply only in ${selectedLanguage}.`;
   if (pageContext?.textContent && !useToolMode) {
     systemContent += `\n\n--- PAGE CONTEXT ---\n${pageContext.textContent}\n--- END PAGE CONTEXT ---`;
   } else if (pageContext?.title || pageContext?.url) {
@@ -60,13 +61,24 @@ function buildChatMessages(messages, pageContext, settings, options = {}) {
     chatMessages.push(m);
   }
 
-  // Keep a final explicit reminder at the end of the prompt stack.
-  chatMessages.push({
-    role: 'system',
-    content: `Final reminder: reply only in ${selectedLanguage}.`,
-  });
-
   return chatMessages;
+}
+
+function isYouTubeWatchUrl(rawUrl) {
+  if (!rawUrl) return false;
+  try {
+    const url = new URL(rawUrl);
+    const host = url.hostname.replace(/^www\./, '');
+    return (host === 'youtube.com' || host === 'm.youtube.com') && url.pathname === '/watch';
+  } catch {
+    return false;
+  }
+}
+
+function shouldUseToolMode(providerId, provider, pageContext) {
+  if (providerId !== 'lmstudio' || typeof provider?.supportsTools !== 'function') return false;
+  if (!pageContext?.textContent) return false;
+  return !isYouTubeWatchUrl(pageContext?.url);
 }
 
 function mergeContextLimits(allLimitEntries) {
@@ -81,6 +93,12 @@ function mergeContextLimits(allLimitEntries) {
     applied: details.length > 0,
     details,
   };
+}
+
+function shouldRetryLMStudioWithoutTools(err, providerId, attemptedToolMode) {
+  if (!attemptedToolMode || providerId !== 'lmstudio' || !err) return false;
+  const message = String(err?.message || '');
+  return /No user query found in messages|jinja template/i.test(message);
 }
 
 function normalizePageUrl(rawUrl) {
@@ -147,6 +165,21 @@ async function getDistilledContentForTab(tabId, options = {}) {
   } catch {
     return { error: 'Tab not found' };
   }
+
+  if (isYouTubeWatchUrl(tab.url)) {
+    return browser.tabs.sendMessage(
+      tabId,
+      {
+        type: 'distill',
+        options: {
+          includeIframes: false,
+          includeTechnicalContext,
+        },
+      },
+      { frameId: 0 }
+    );
+  }
+
   const frameResponses = [];
   let frames;
 
@@ -158,13 +191,17 @@ async function getDistilledContentForTab(tabId, options = {}) {
 
   // Fallback to top frame if frame enumeration is unavailable.
   if (!Array.isArray(frames) || frames.length === 0) {
-    return browser.tabs.sendMessage(tabId, {
-      type: 'distill',
-      options: {
-        includeIframes: true,
-        includeTechnicalContext,
+    return browser.tabs.sendMessage(
+      tabId,
+      {
+        type: 'distill',
+        options: {
+          includeIframes: true,
+          includeTechnicalContext,
+        },
       },
-    });
+      { frameId: 0 }
+    );
   }
 
   for (const frame of frames) {
@@ -282,11 +319,13 @@ browser.runtime.onConnect.addListener((port) => {
         }
 
         let useToolMode = false;
-        if (settings.activeProvider === 'lmstudio' && typeof provider.supportsTools === 'function') {
+        if (shouldUseToolMode(settings.activeProvider, provider, pageContext)) {
           useToolMode = await provider.supportsTools();
         }
 
-        const chatMessages = buildChatMessages(messages, pageContext, settings, { useToolMode });
+        const toolModeMessages = buildChatMessages(messages, pageContext, settings, { useToolMode: true });
+        const fullContextMessages = buildChatMessages(messages, pageContext, settings, { useToolMode: false });
+        const chatMessages = useToolMode ? toolModeMessages : fullContextMessages;
         const contextMode = useToolMode ? 'tools' : 'full_context';
         try {
           port.postMessage({ type: 'context_mode', mode: contextMode });
@@ -294,28 +333,62 @@ browser.runtime.onConnect.addListener((port) => {
 
         port.postMessage({ type: 'stream_start' });
 
-        await provider.sendMessage(chatMessages, {
-          signal: abortController.signal,
-          pageContext,
-          useToolMode,
-          onThinkingToken: (token) => {
-            streamedThinking += token;
-            try {
-              port.postMessage({ type: 'stream_thinking', token });
-            } catch {
-              abortController?.abort();
-            }
-          },
-          onToken: (token) => {
-            streamedText += token;
-            try {
-              port.postMessage({ type: 'stream_token', token });
-            } catch {
-              // Port disconnected
-              abortController?.abort();
-            }
-          },
-        });
+        try {
+          await provider.sendMessage(chatMessages, {
+            signal: abortController.signal,
+            pageContext,
+            useToolMode,
+            onThinkingToken: (token) => {
+              streamedThinking += token;
+              try {
+                port.postMessage({ type: 'stream_thinking', token });
+              } catch {
+                abortController?.abort();
+              }
+            },
+            onToken: (token) => {
+              streamedText += token;
+              try {
+                port.postMessage({ type: 'stream_token', token });
+              } catch {
+                // Port disconnected
+                abortController?.abort();
+              }
+            },
+          });
+        } catch (err) {
+          if (!shouldRetryLMStudioWithoutTools(err, settings.activeProvider, useToolMode)) {
+            throw err;
+          }
+
+          streamedText = '';
+          streamedThinking = '';
+          try {
+            port.postMessage({ type: 'context_mode', mode: 'full_context' });
+          } catch {}
+
+          await provider.sendMessage(fullContextMessages, {
+            signal: abortController.signal,
+            pageContext,
+            useToolMode: false,
+            onThinkingToken: (token) => {
+              streamedThinking += token;
+              try {
+                port.postMessage({ type: 'stream_thinking', token });
+              } catch {
+                abortController?.abort();
+              }
+            },
+            onToken: (token) => {
+              streamedText += token;
+              try {
+                port.postMessage({ type: 'stream_token', token });
+              } catch {
+                abortController?.abort();
+              }
+            },
+          });
+        }
 
         if (streamedText) {
           const pageKey = normalizePageUrl(requestPageContext?.url);

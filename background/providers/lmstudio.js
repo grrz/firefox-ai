@@ -4,6 +4,10 @@ import { ProviderError } from './base.js';
 export class LMStudioProvider extends OpenAIProvider {
   static toolSupportCache = new Map();
 
+  getToolSupportCacheKey() {
+    return `${this.getEndpoint()}::${this.getModel()}`;
+  }
+
   validate() {
     // No API key needed for local LM Studio
     return { valid: true };
@@ -22,7 +26,7 @@ export class LMStudioProvider extends OpenAIProvider {
   }
 
   async supportsTools() {
-    const cacheKey = `${this.getEndpoint()}::${this.getModel()}`;
+    const cacheKey = this.getToolSupportCacheKey();
     if (LMStudioProvider.toolSupportCache.has(cacheKey)) {
       return LMStudioProvider.toolSupportCache.get(cacheKey);
     }
@@ -69,6 +73,10 @@ export class LMStudioProvider extends OpenAIProvider {
       LMStudioProvider.toolSupportCache.set(cacheKey, false);
       return false;
     }
+  }
+
+  markToolsUnsupported() {
+    LMStudioProvider.toolSupportCache.set(this.getToolSupportCacheKey(), false);
   }
 
   buildToolSpec() {
@@ -179,6 +187,9 @@ export class LMStudioProvider extends OpenAIProvider {
 
       if (!response.ok) {
         const text = await response.text().catch(() => '');
+        if (response.status === 400 && /No user query found in messages|jinja template/i.test(text)) {
+          this.markToolsUnsupported();
+        }
         throw new ProviderError(`LM Studio API error (${response.status}): ${text}`, { status: response.status });
       }
 

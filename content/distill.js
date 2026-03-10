@@ -1483,7 +1483,7 @@
     return lines.join('\n');
   }
 
-  async function distillYouTube() {
+  async function distillYouTube(options = {}) {
     const playerResponse = await getYTInitialPlayerResponse();
     const meta = extractYouTubeMetadata(playerResponse);
     const description = extractYouTubeDescription(playerResponse);
@@ -1492,7 +1492,7 @@
 
     let textContent = buildYouTubeTextContent(meta, description, transcript, comments);
     let technicalContext = null;
-    if (options?.includeTechnicalContext) {
+    if (options.includeTechnicalContext) {
       const technical = buildTechnicalContextSection();
       textContent += `\n\n${technical.sectionText}`;
       technicalContext = technical.data;
