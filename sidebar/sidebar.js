@@ -13,6 +13,7 @@ const SCROLL_BOTTOM_THRESHOLD_PX = 24;
 const state = {
   mode: 'welcome', // 'welcome' | 'chat'
   messages: [],     // {role: 'user'|'assistant'|'notice', content: string}
+  draftText: '',
   pageContext: null,
   technicalAnalysisMode: false,
   settings: null,
@@ -79,9 +80,12 @@ async function init() {
 // ========== Per-Tab State ==========
 function saveTabState() {
   if (state.currentTabId == null) return;
+  const draftText = getCurrentDraftText();
+  state.draftText = draftText;
   tabStates.set(state.currentTabId, {
     mode: state.mode,
     messages: cloneChatMessages(state.messages),
+    draftText,
     pageContext: state.pageContext,
     technicalAnalysisMode: !!state.technicalAnalysisMode,
     pageKey: state.currentPageKey,
@@ -99,11 +103,13 @@ async function restoreTabState(tabId) {
   if (source) {
     state.mode = source.mode;
     state.messages = cloneChatMessages(source.messages);
+    state.draftText = typeof source.draftText === 'string' ? source.draftText : '';
     state.pageContext = source.pageContext || null;
     state.technicalAnalysisMode = !!source.technicalAnalysisMode;
     tabStates.set(tabId, {
       mode: source.mode,
       messages: cloneChatMessages(source.messages),
+      draftText: state.draftText,
       pageContext: source.pageContext || null,
       technicalAnalysisMode: !!source.technicalAnalysisMode,
       pageKey: state.currentPageKey,
@@ -111,6 +117,7 @@ async function restoreTabState(tabId) {
   } else {
     state.mode = 'welcome';
     state.messages = [];
+    state.draftText = '';
     state.pageContext = null;
     state.technicalAnalysisMode = false;
   }
@@ -131,12 +138,12 @@ async function restoreTabState(tabId) {
     stopBtn.classList.remove('hidden');
     scrollToBottom();
   } else if (!source || source.messages.length === 0) {
-    fetchPageContext();
+    await fetchPageContext();
   }
 }
 
 function rebuildUI() {
-  userInput.value = '';
+  userInput.value = state.draftText || '';
   autoResize();
   messagesEl.innerHTML = '';
   actionBarEl.innerHTML = '';
@@ -299,6 +306,7 @@ function switchToWelcome() {
   disarmClearChatConfirm();
   state.mode = 'welcome';
   state.messages = [];
+  state.draftText = '';
   state.technicalAnalysisMode = false;
   closeHistoryMenu();
   welcomeState.classList.remove('hidden');
@@ -605,14 +613,14 @@ function linkifySourceTags(text) {
   if (!text) return text;
   const anchors = getSourceAnchorsMap();
   if (Object.keys(anchors).length === 0) return text;
-  return String(text).replace(/\[(s\d+(?:\s*-\s*s?\d+)?(?:\s*,\s*s?\d+(?:\s*-\s*s?\d+)?)*)]/gi, (match, group) => {
+  return String(text).replace(/\[(s\d+(?:\s*[-–—]\s*s?\d+)?(?:\s*,\s*s?\d+(?:\s*[-–—]\s*s?\d+)?)*)]/gi, (match, group) => {
     const parts = [];
     const tokens = group
       .split(',')
       .map((x) => x.trim().toLowerCase())
       .filter(Boolean);
     for (const token of tokens) {
-      const rangeMatch = token.match(/^s(\d+)\s*-\s*s?(\d+)$/i);
+      const rangeMatch = token.match(/^s(\d+)\s*[-–—]\s*s?(\d+)$/i);
       if (rangeMatch) {
         const start = Number(rangeMatch[1]);
         const end = Number(rangeMatch[2]);
@@ -806,10 +814,11 @@ function handleSend(meta = {}) {
   const keyCheck = checkApiKey();
   if (!keyCheck.valid) {
     if (state.mode === 'welcome') switchToChat();
-    appendMessage({ role: 'user', content: text });
-    appendErrorMessage(keyCheck.error);
+    state.draftText = '';
     userInput.value = '';
     autoResize();
+    appendMessage({ role: 'user', content: text });
+    appendErrorMessage(keyCheck.error);
     return;
   }
 
@@ -821,9 +830,10 @@ function handleSend(meta = {}) {
     userMessage.actionId = meta.action.id;
     userMessage.actionLabel = meta.action.label;
   }
-  appendMessage(userMessage);
+  state.draftText = '';
   userInput.value = '';
   autoResize();
+  appendMessage(userMessage);
 
   startStreaming();
 }
@@ -1129,6 +1139,13 @@ function autoResize() {
   userInput.style.height = Math.min(userInput.scrollHeight, 120) + 'px';
 }
 
+function getCurrentDraftText() {
+  if (userInput && typeof userInput.value === 'string') {
+    return userInput.value;
+  }
+  return typeof state.draftText === 'string' ? state.draftText : '';
+}
+
 // ========== Event Binding ==========
 function bindEvents() {
   sendBtn.addEventListener('click', handleSend);
@@ -1187,7 +1204,10 @@ function bindEvents() {
     }
   });
 
-  userInput.addEventListener('input', autoResize);
+  userInput.addEventListener('input', () => {
+    state.draftText = userInput.value;
+    autoResize();
+  });
   window.addEventListener('resize', () => {
     if (state.mode === 'chat') scheduleActionButtonsCompactMode();
   });
@@ -1304,10 +1324,14 @@ async function loadPersistedChatForPage(pageKey) {
   if (!pageKey) return null;
   const chats = await loadPersistedChatsByPage();
   const saved = chats[pageKey];
-  if (!saved || !Array.isArray(saved.messages)) return null;
+  if (!saved) return null;
+  const messages = Array.isArray(saved.messages) ? saved.messages : [];
+  const draftText = typeof saved.draftText === 'string' ? saved.draftText : '';
+  if (messages.length === 0 && !draftText) return null;
   return {
     mode: saved.mode === 'chat' ? 'chat' : 'welcome',
-    messages: cloneChatMessages(saved.messages),
+    messages: cloneChatMessages(messages),
+    draftText,
     pageContext: saved.pageContext || null,
     technicalAnalysisMode: !!saved.technicalAnalysisMode,
   };
@@ -1319,6 +1343,7 @@ async function persistCurrentPageChat() {
 
   const chats = await loadPersistedChatsByPage();
   const hasConversation = state.mode === 'chat' && state.messages.length > 0;
+  const draftText = getCurrentDraftText();
 
   if (!hasConversation) {
     delete chats[pageKey];
@@ -1327,8 +1352,9 @@ async function persistCurrentPageChat() {
   }
 
   chats[pageKey] = {
-    mode: 'chat',
+    mode: state.mode === 'chat' ? 'chat' : 'welcome',
     messages: cloneChatMessages(state.messages),
+    draftText,
     pageContext: state.pageContext || null,
     technicalAnalysisMode: !!state.technicalAnalysisMode,
     updatedAt: Date.now(),

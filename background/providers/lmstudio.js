@@ -50,26 +50,28 @@ export class LMStudioProvider extends OpenAIProvider {
           },
         },
       ],
-      tool_choice: 'auto',
+      tool_choice: 'required',
       temperature: 0,
     };
 
     try {
+      console.log('[tools-debug] probing tool support:', cacheKey);
       const resp = await fetch(this.getEndpoint(), {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify(body),
       });
       if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        console.warn('[tools-debug] probe failed:', resp.status, errText.slice(0, 300));
         LMStudioProvider.toolSupportCache.set(cacheKey, false);
         return false;
       }
-      const parsed = await resp.json().catch(() => ({}));
-      const msg = parsed?.choices?.[0]?.message;
-      const supported = Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0;
-      LMStudioProvider.toolSupportCache.set(cacheKey, supported);
-      return supported;
-    } catch {
+      console.log('[tools-debug] probe OK — tools supported');
+      LMStudioProvider.toolSupportCache.set(cacheKey, true);
+      return true;
+    } catch (err) {
+      console.warn('[tools-debug] probe exception:', err);
       LMStudioProvider.toolSupportCache.set(cacheKey, false);
       return false;
     }
@@ -152,19 +154,32 @@ export class LMStudioProvider extends OpenAIProvider {
 
   async sendMessage(messages, { signal, onToken, onThinkingToken, pageContext, useToolMode } = {}) {
     if (!useToolMode || !pageContext?.textContent) {
+      console.log('[tools-debug] sendMessage: skipping tools (useToolMode=%s, hasText=%s)', useToolMode, !!pageContext?.textContent);
       return super.sendMessage(messages, { signal, onToken, onThinkingToken });
     }
 
     const supportsTools = await this.supportsTools();
     if (!supportsTools) {
+      console.log('[tools-debug] sendMessage: supportsTools=false, using streaming fallback');
       return super.sendMessage(messages, { signal, onToken, onThinkingToken });
     }
 
+    console.log('[tools-debug] sendMessage: entering tool loop');
     const toolMessages = [...messages];
-    toolMessages.unshift({
-      role: 'system',
-      content: 'Use tools for page inspection instead of asking for full context dump. Call tools when details are missing.',
-    });
+    // Merge tool instructions into the first system message instead of adding
+    // a second system message — many jinja templates break on multiple system messages.
+    const sysIdx = toolMessages.findIndex((m) => m.role === 'system');
+    if (sysIdx !== -1) {
+      toolMessages[sysIdx] = {
+        ...toolMessages[sysIdx],
+        content: toolMessages[sysIdx].content + '\n\nUse tools for page inspection instead of asking for full context dump. Call tools when details are missing.',
+      };
+    } else {
+      toolMessages.unshift({
+        role: 'system',
+        content: 'Use tools for page inspection instead of asking for full context dump. Call tools when details are missing.',
+      });
+    }
     const tools = this.buildToolSpec();
 
     for (let step = 0; step < 6; step++) {
@@ -175,6 +190,7 @@ export class LMStudioProvider extends OpenAIProvider {
         tools,
         tool_choice: 'auto',
       };
+      console.log('[tools-debug] tool step %d: sending request', step);
       const response = await fetch(this.getEndpoint(), {
         method: 'POST',
         headers: this.buildHeaders(),
@@ -187,6 +203,7 @@ export class LMStudioProvider extends OpenAIProvider {
 
       if (!response.ok) {
         const text = await response.text().catch(() => '');
+        console.warn('[tools-debug] tool step %d: API error %d: %s', step, response.status, text.slice(0, 300));
         if (response.status === 400 && /No user query found in messages|jinja template/i.test(text)) {
           this.markToolsUnsupported();
         }
@@ -196,6 +213,7 @@ export class LMStudioProvider extends OpenAIProvider {
       const parsed = await response.json().catch(() => ({}));
       const msg = parsed?.choices?.[0]?.message || {};
       const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+      console.log('[tools-debug] tool step %d: toolCalls=%d, hasContent=%s', step, toolCalls.length, !!msg.content);
       if (toolCalls.length === 0) {
         const finalText = String(msg?.content || '');
         if (finalText) onToken?.(finalText);

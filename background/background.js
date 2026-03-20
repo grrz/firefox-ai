@@ -75,10 +75,15 @@ function isYouTubeWatchUrl(rawUrl) {
   }
 }
 
+const YOUTUBE_TOOL_MODE_THRESHOLD = 30000;
+
 function shouldUseToolMode(providerId, provider, pageContext) {
   if (providerId !== 'lmstudio' || typeof provider?.supportsTools !== 'function') return false;
   if (!pageContext?.textContent) return false;
-  return !isYouTubeWatchUrl(pageContext?.url);
+  if (isYouTubeWatchUrl(pageContext?.url)) {
+    return pageContext.textContent.length >= YOUTUBE_TOOL_MODE_THRESHOLD;
+  }
+  return true;
 }
 
 function mergeContextLimits(allLimitEntries) {
@@ -319,8 +324,14 @@ browser.runtime.onConnect.addListener((port) => {
         }
 
         let useToolMode = false;
-        if (shouldUseToolMode(settings.activeProvider, provider, pageContext)) {
+        const shouldTool = shouldUseToolMode(settings.activeProvider, provider, pageContext);
+        console.log('[tools-debug] shouldUseToolMode:', shouldTool,
+          '| provider:', settings.activeProvider,
+          '| hasTextContent:', !!pageContext?.textContent,
+          '| url:', pageContext?.url);
+        if (shouldTool) {
           useToolMode = await provider.supportsTools();
+          console.log('[tools-debug] supportsTools():', useToolMode);
         }
 
         const toolModeMessages = buildChatMessages(messages, pageContext, settings, { useToolMode: true });
@@ -357,9 +368,11 @@ browser.runtime.onConnect.addListener((port) => {
             },
           });
         } catch (err) {
+          console.warn('[tools-debug] sendMessage threw:', err?.message || err);
           if (!shouldRetryLMStudioWithoutTools(err, settings.activeProvider, useToolMode)) {
             throw err;
           }
+          console.warn('[tools-debug] retrying without tools (full_context fallback)');
 
           streamedText = '';
           streamedThinking = '';

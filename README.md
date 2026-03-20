@@ -63,3 +63,42 @@ npx web-ext run
 ```bash
 cd firefox-ai && zip -r ../firefox-ai.zip . -x '.*' -x '__MACOSX' -x 'node_modules/*'
 ```
+
+## CLI Signing
+
+You can sign the add-on from the command line with `web-ext`, and the sign step already packages the extension for you.
+
+1. Create AMO API credentials in Developer Hub.
+2. Export them as environment variables:
+
+```bash
+export WEB_EXT_API_KEY="your-amo-jwt-issuer"
+export WEB_EXT_API_SECRET="your-amo-jwt-secret"
+```
+
+Aliases are also supported:
+
+```bash
+export AMO_JWT_ISSUER="your-amo-jwt-issuer"
+export AMO_JWT_SECRET="your-amo-jwt-secret"
+```
+
+3. Run the signing script:
+
+```bash
+./scripts/sign-addon.sh
+```
+
+By default this signs an `unlisted` build and writes the signed `.xpi` to `web-ext-artifacts/`.
+
+Optional:
+
+```bash
+CHANNEL=listed AMO_METADATA_FILE=./amo-metadata.json ./scripts/sign-addon.sh
+```
+
+If `web-ext` is not installed globally, the script falls back to `npx web-ext`.
+
+References:
+- Firefox Extension Workshop: https://extensionworkshop.com/documentation/develop/web-ext-command-reference/
+- Firefox Extension Workshop: https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/
