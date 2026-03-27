@@ -528,29 +528,37 @@ function toggleHistoryMenu() {
   historyDropdownEl.classList.toggle('menu-closed', historyMenuEl.classList.contains('hidden'));
 }
 
-function getVisibleMessageAnchorIndex() {
-  const viewportTop = messagesEl.scrollTop;
-  const viewportProbe = viewportTop + Math.max(8, Math.floor(messagesEl.clientHeight * 0.25));
-  const messageNodes = messagesEl.querySelectorAll('.message');
-  for (const el of messageNodes) {
-    const top = el.offsetTop;
-    const bottom = top + el.offsetHeight;
-    if (bottom >= viewportProbe) {
-      return Number(el.dataset.index);
-    }
-  }
-  return state.messages.length - 1;
+function getMessageElementByIndex(index) {
+  if (!Number.isFinite(index)) return null;
+  return messagesEl.querySelector(`.message[data-index="${index}"]`);
 }
 
 function getActiveHistoryEntry(entries) {
   if (!entries.length) return null;
-  const anchorIndex = getVisibleMessageAnchorIndex();
-  let candidate = entries[0];
-  for (const entry of entries) {
-    if (entry.messageIndex <= anchorIndex) candidate = entry;
-    else break;
+  const viewportProbe = messagesEl.scrollTop + Math.max(8, Math.floor(messagesEl.clientHeight * 0.5));
+  let fallback = entries[entries.length - 1];
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const currentEl = getMessageElementByIndex(entry.messageIndex);
+    if (!currentEl) continue;
+
+    const nextEntry = entries[i + 1] || null;
+    const nextEl = nextEntry ? getMessageElementByIndex(nextEntry.messageIndex) : null;
+    const start = currentEl.offsetTop;
+    const end = nextEl ? nextEl.offsetTop : messagesEl.scrollHeight;
+
+    if (viewportProbe < start) {
+      return i > 0 ? entries[i - 1] : entry;
+    }
+    if (viewportProbe >= start && viewportProbe < end) {
+      return entry;
+    }
+
+    fallback = entry;
   }
-  return candidate;
+
+  return fallback;
 }
 
 function updateHistoryDropdownUI() {
