@@ -325,13 +325,8 @@ browser.runtime.onConnect.addListener((port) => {
 
         let useToolMode = false;
         const shouldTool = shouldUseToolMode(settings.activeProvider, provider, pageContext);
-        console.log('[tools-debug] shouldUseToolMode:', shouldTool,
-          '| provider:', settings.activeProvider,
-          '| hasTextContent:', !!pageContext?.textContent,
-          '| url:', pageContext?.url);
         if (shouldTool) {
           useToolMode = await provider.supportsTools();
-          console.log('[tools-debug] supportsTools():', useToolMode);
         }
 
         const toolModeMessages = buildChatMessages(messages, pageContext, settings, { useToolMode: true });
@@ -368,11 +363,9 @@ browser.runtime.onConnect.addListener((port) => {
             },
           });
         } catch (err) {
-          console.warn('[tools-debug] sendMessage threw:', err?.message || err);
           if (!shouldRetryLMStudioWithoutTools(err, settings.activeProvider, useToolMode)) {
             throw err;
           }
-          console.warn('[tools-debug] retrying without tools (full_context fallback)');
 
           streamedText = '';
           streamedThinking = '';
@@ -490,17 +483,22 @@ browser.runtime.onMessage.addListener(async (message) => {
   // Fetch YouTube transcript via innertube get_transcript endpoint
   if (message.type === 'fetchYouTubeTranscript') {
     try {
-      const { videoId, clientVersion, clientName, apiKey } = message;
+      const { videoId, clientVersion, clientName, apiKey, visitorData, transcriptParams, watchUrl } = message;
       if (!videoId) return { error: 'Missing videoId' };
 
-      // Build protobuf params: { field1: { field2: videoId } }
-      const idBytes = new TextEncoder().encode(videoId);
-      const inner = new Uint8Array([0x12, idBytes.length, ...idBytes]);
-      const outer = new Uint8Array([0x0a, inner.length, ...inner]);
-      const params = btoa(String.fromCharCode(...outer))
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/, '');
+      let params = '';
+      if (typeof transcriptParams === 'string' && transcriptParams.trim()) {
+        params = transcriptParams.trim();
+      } else {
+        // Legacy fallback params: { field1: { field2: videoId } }
+        const idBytes = new TextEncoder().encode(videoId);
+        const inner = new Uint8Array([0x12, idBytes.length, ...idBytes]);
+        const outer = new Uint8Array([0x0a, inner.length, ...inner]);
+        params = btoa(String.fromCharCode(...outer))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/, '');
+      }
 
       const ytClientVersion = clientVersion || '2.20250101.00.00';
       const ytClientName = typeof clientName === 'string' && clientName ? clientName : 'WEB';
@@ -511,11 +509,14 @@ browser.runtime.onMessage.addListener(async (message) => {
       const resp = await fetch(endpoint, {
         method: 'POST',
         credentials: 'include',
+        referrer: watchUrl || `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+        referrerPolicy: 'origin-when-cross-origin',
         headers: {
           'Content-Type': 'application/json',
           'X-YouTube-Client-Version': ytClientVersion,
           // WEB maps to client id 1 in request headers.
           'X-YouTube-Client-Name': ytClientName === 'WEB' ? '1' : ytClientName,
+          ...(visitorData ? { 'X-Goog-Visitor-Id': visitorData } : {}),
         },
         body: JSON.stringify({
           context: {
@@ -523,18 +524,17 @@ browser.runtime.onMessage.addListener(async (message) => {
               clientName: ytClientName,
               clientVersion: ytClientVersion,
               hl: 'en',
+              ...(visitorData ? { visitorData } : {}),
+              ...(watchUrl ? { originalUrl: watchUrl } : {}),
             },
           },
           params,
         }),
       });
-      console.log('[bg fetchYouTubeTranscript] status:', resp.status);
       if (!resp.ok) return { error: `HTTP ${resp.status}` };
       const data = await resp.json();
-      console.log('[bg fetchYouTubeTranscript] keys:', Object.keys(data));
       return { data };
     } catch (err) {
-      console.log('[bg fetchYouTubeTranscript] error:', err.message);
       return { error: err.message };
     }
   }

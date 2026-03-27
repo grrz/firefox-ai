@@ -915,7 +915,7 @@
    * Always returns fresh data with valid caption URLs.
    */
   async function fetchFreshPlayerResponse(videoId) {
-    const pageResp = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`);
+    const pageResp = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, { credentials: 'include' });
     if (!pageResp.ok) return null;
     const html = await pageResp.text();
 
@@ -960,6 +960,70 @@
     } catch {}
 
     return null;
+  }
+
+  async function getYTInitialData() {
+    // 1. Read the live page global via Firefox's wrappedJSObject.
+    try {
+      const raw = window.wrappedJSObject?.ytInitialData;
+      if (raw) {
+        return JSON.parse(window.wrappedJSObject.JSON.stringify(raw));
+      }
+    } catch {}
+
+    // 2. Parse from <script> tags in the live DOM.
+    try {
+      const scripts = document.querySelectorAll('script');
+      for (const script of scripts) {
+        const text = script.textContent;
+        if (!text || !text.includes('ytInitialData')) continue;
+        const startMatch = text.match(/ytInitialData\s*=\s*\{/);
+        if (!startMatch) continue;
+        const parsed = parseJSONFromText(text, startMatch.index + startMatch[0].length - 1);
+        if (parsed) return parsed;
+      }
+    } catch {}
+
+    // 3. Fetch the watch page HTML.
+    try {
+      const videoId = new URLSearchParams(location.search).get('v');
+      const pageResp = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, { credentials: 'include' });
+      if (!pageResp.ok) return null;
+      const html = await pageResp.text();
+      for (const marker of ['var ytInitialData = ', 'ytInitialData = ']) {
+        const start = html.indexOf(marker);
+        if (start === -1) continue;
+        const jsonStart = start + marker.length;
+        if (html[jsonStart] !== '{') continue;
+        const parsed = parseJSONFromText(html, jsonStart);
+        if (parsed) return parsed;
+      }
+    } catch {}
+
+    return null;
+  }
+
+  function extractTranscriptParams(root) {
+    const seen = new WeakSet();
+
+    function visit(node) {
+      if (!node || typeof node !== 'object') return null;
+      if (seen.has(node)) return null;
+      seen.add(node);
+
+      const direct = node?.getTranscriptEndpoint?.params;
+      if (typeof direct === 'string' && direct) {
+        try { return decodeURIComponent(direct); } catch { return direct; }
+      }
+
+      for (const value of Object.values(node)) {
+        const found = visit(value);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    return visit(root);
   }
 
   function extractYouTubeMetadata(playerResponse) {
@@ -1050,12 +1114,9 @@
     }
   }
 
-  async function contentFetchText(url) {
+  async function contentFetchText(url, { credentials = 'include' } = {}) {
     try {
-      const resp = await fetch(url, {
-        credentials: 'include',
-        cache: 'no-store',
-      });
+      const resp = await fetch(url, { credentials, cache: 'no-store' });
       const text = await resp.text();
       return { text: text || '', status: resp.status || 0 };
     } catch {
@@ -1114,29 +1175,164 @@
     });
   }
 
-  function logTranscriptCandidates() {
-    try {
-      const selectors = [
-        'button',
-        '[class*="paper-button"]',
-        '[class*="button-renderer"]',
-        '[class*="paper-item"]',
-        '[class*="menu-service-item-renderer"]',
-      ];
-      const all = Array.from(document.querySelectorAll(selectors.join(',')));
-      const matches = all
-        .map(el => ({ el, label: getElementLabel(el) }))
-        .filter(({ label }) => {
-          const joined = `${label.text} ${label.aria} ${label.title}`.toLowerCase();
-          return joined.includes('transcript') || joined.includes('caption') || joined.includes('show');
-        })
-        .slice(0, 30);
-
-      // Intentionally no-op in production; kept for optional local debugging.
-      void matches;
-    } catch (err) {
-      void err;
+  function getTranscriptPanelElement({ visibleOnly = false } = {}) {
+    const selectors = [
+      '[target-id="engagement-panel-timeline-view-consolidated"]',
+      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-timeline-view-consolidated"]',
+      '[target-id="PAmodern_transcript_view"]',
+      '[target-id*="transcript"]',
+      'ytd-transcript-renderer',
+      '[class*="transcript-search-panel-renderer"]',
+      '[class*="transcript-renderer"]',
+    ];
+    for (const selector of selectors) {
+      const candidates = Array.from(document.querySelectorAll(selector));
+      for (const el of candidates) {
+        if (visibleOnly && !isVisible(el)) continue;
+        return el;
+      }
     }
+    return null;
+  }
+
+  function hasTranscriptPanelVisible() {
+    const panel = getTranscriptPanelElement({ visibleOnly: true });
+    const hasVisibleSegments = Array.from(
+      document.querySelectorAll('ytd-transcript-segment-renderer, [class*="transcript-segment-renderer"]')
+    ).some(isVisible);
+    return !!panel || hasVisibleSegments;
+  }
+
+  function findDedicatedTranscriptButton() {
+    const selectors = [
+      'ytd-video-description-transcript-section-renderer button',
+      'ytd-video-description-transcript-section-renderer [role="button"]',
+      '[class*="transcript-section-renderer"] button',
+      '[class*="transcript-section-renderer"] [role="button"]',
+      '#description button',
+      '#description [role="button"]',
+    ];
+    for (const selector of selectors) {
+      const candidates = Array.from(document.querySelectorAll(selector));
+      for (const el of candidates) {
+        if (!isVisible(el)) continue;
+        const label = getElementLabel(el);
+        const joined = `${label.text} ${label.aria} ${label.title}`.toLowerCase();
+        if (joined.includes('show transcript') || joined === 'transcript') return el;
+      }
+    }
+    return null;
+  }
+
+  function findTranscriptChipButton() {
+    const panel = getTranscriptPanelElement({ visibleOnly: true });
+    const roots = [panel, document].filter(Boolean);
+    const selectors = [
+      'button',
+      '[role="button"]',
+      '[role="tab"]',
+      'yt-chip-cloud-chip-renderer',
+      '[class*="chip"]',
+    ];
+    for (const root of roots) {
+      const candidates = Array.from(root.querySelectorAll(selectors.join(',')));
+      for (const el of candidates) {
+        if (!isVisible(el)) continue;
+        const label = getElementLabel(el);
+        const joined = `${label.text} ${label.aria} ${label.title}`.toLowerCase().replace(/\s+/g, ' ').trim();
+        if (!joined) continue;
+        if (joined.includes('show transcript') || joined.includes('close transcript')) continue;
+        if (joined === 'transcript' || joined.startsWith('transcript,')) return el;
+      }
+    }
+    return null;
+  }
+
+  function isTranscriptChipSelected(el) {
+    if (!el) return false;
+    const ariaPressed = (el.getAttribute('aria-pressed') || '').toLowerCase();
+    const ariaSelected = (el.getAttribute('aria-selected') || '').toLowerCase();
+    const classes = (el.className || '').toString().toLowerCase();
+    const label = `${el.textContent || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+    return ariaPressed === 'true' ||
+      ariaSelected === 'true' ||
+      classes.includes('selected') ||
+      label.includes('selected');
+  }
+
+  async function activateTranscriptChipIfPresent() {
+    const chip = findTranscriptChipButton();
+    if (!chip || isTranscriptChipSelected(chip)) return false;
+    clickElement(resolveClickable(chip));
+    await sleep(1200);
+    return true;
+  }
+
+  function normalizeTranscriptText(text) {
+    return String(text || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function isTranscriptTimestampLike(text) {
+    const normalized = normalizeTranscriptText(text).toLowerCase();
+    if (!normalized) return false;
+    return /^\d{1,2}:\d{2}(?::\d{2})?$/.test(normalized) ||
+      /^\d+\s+seconds?$/.test(normalized) ||
+      /^\d+\s+minutes?(?:\s+\d+\s+seconds?)?$/.test(normalized) ||
+      /^\d+\s+hours?(?:\s+\d+\s+minutes?)?(?:\s+\d+\s+seconds?)?$/.test(normalized);
+  }
+
+  function extractTranscriptTextFromSegment(seg) {
+    if (!seg) return '';
+
+    const explicitSelectors = [
+      'yt-formatted-string#segment-text',
+      '.segment-text',
+      '#segment-text',
+      '[class*="segment-text"]',
+    ];
+    for (const selector of explicitSelectors) {
+      const candidates = Array.from(seg.querySelectorAll(selector));
+      for (const el of candidates) {
+        const text = normalizeTranscriptText(el.innerText || el.textContent);
+        if (!text || isTranscriptTimestampLike(text)) continue;
+        return text;
+      }
+    }
+
+    const genericCandidates = Array.from(
+      seg.querySelectorAll('yt-formatted-string, [id="text"], [class*="formatted-string"], span, div')
+    )
+      .map((el) => {
+        const text = normalizeTranscriptText(el.innerText || el.textContent);
+        if (!text || isTranscriptTimestampLike(text)) return null;
+        const cls = (el.className || '').toString().toLowerCase();
+        const id = (el.id || '').toLowerCase();
+        const penalty =
+          (cls.includes('timestamp') ? 100 : 0) +
+          (cls.includes('start-offset') ? 100 : 0) +
+          (id.includes('timestamp') ? 100 : 0);
+        return {
+          text,
+          score: Math.max(0, text.length - penalty),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+
+    if (genericCandidates.length > 0) {
+      return genericCandidates[0].text;
+    }
+
+    const rawLines = (seg.innerText ?? seg.textContent ?? '')
+      .split('\n')
+      .map(normalizeTranscriptText)
+      .filter(Boolean);
+    const contentLines = rawLines.filter((line) => !isTranscriptTimestampLike(line));
+    if (contentLines.length > 0) {
+      return contentLines.join(' ');
+    }
+
+    return '';
   }
 
   function parseTranscriptFromDOM() {
@@ -1144,11 +1340,13 @@
     let wordCount = 0;
     const WORD_LIMIT = 10000;
 
-    // Variant A: classic segment renderer rows.
-    const segmentNodes = document.querySelectorAll('[class*="transcript-segment-renderer"]');
+    // Variant A: segment renderer rows — match by tag name only.
+    // [class*="transcript-segment-renderer"] is avoided because Shady DOM adds
+    // "style-scope ytd-transcript-segment-renderer" to CHILDREN of the segment,
+    // causing the selector to match timestamp spans and other sub-elements too.
+    const segmentNodes = document.querySelectorAll('ytd-transcript-segment-renderer');
     for (const seg of segmentNodes) {
-      const textEl = seg.querySelector('.segment-text, #segment-text, [class*="segment-text"], [id="message"], [id="text"], [class*="formatted-string"]');
-      const text = textEl?.textContent?.trim() || '';
+      const text = extractTranscriptTextFromSegment(seg);
       if (!text) continue;
 
       lines.push(text);
@@ -1156,24 +1354,21 @@
       if (wordCount >= WORD_LIMIT) break;
     }
 
-    // Variant B: parse transcript panel text as timestamp/text pairs.
+    // Variant B: parse transcript panel rendered text as timestamp/text pairs.
+    // innerText (not textContent) pierces shadow DOM via layout rendering.
     if (!lines.length) {
-      const panel =
-        document.querySelector('[target-id*="transcript"]') ||
-        document.querySelector('[class*="transcript-search-panel-renderer"]') ||
-        document.querySelector('[class*="transcript-renderer"]');
+      const panel = getTranscriptPanelElement({ visibleOnly: true });
 
-      const panelText = panel?.textContent?.replace(/\u00a0/g, ' ').trim() || '';
+      const panelText = (panel?.innerText ?? panel?.textContent ?? '').replace(/\u00a0/g, ' ').trim();
       if (panelText) {
         const rawLines = panelText
           .split('\n')
-          .map(l => l.trim())
+          .map(normalizeTranscriptText)
           .filter(Boolean);
-        const tsRe = /^\d{1,2}:\d{2}(?::\d{2})?$/;
         for (let i = 0; i < rawLines.length; i++) {
-          if (!tsRe.test(rawLines[i])) continue;
+          if (!isTranscriptTimestampLike(rawLines[i])) continue;
           const text = rawLines[i + 1] || '';
-          if (!text || tsRe.test(text)) continue;
+          if (!text || isTranscriptTimestampLike(text)) continue;
           lines.push(text);
           wordCount += text.split(/\s+/).length;
           if (wordCount >= WORD_LIMIT) break;
@@ -1191,10 +1386,20 @@
   }
 
   async function tryOpenTranscriptPanel() {
-    // If already rendered, no need to click anything.
-    if (document.querySelector('[class*="transcript-segment-renderer"]')) return;
+    if (parseTranscriptFromDOM()) return;
 
-    logTranscriptCandidates();
+    if (hasTranscriptPanelVisible()) {
+      await activateTranscriptChipIfPresent();
+      if (parseTranscriptFromDOM()) return;
+    }
+
+    const directButton = findDedicatedTranscriptButton();
+    if (directButton) {
+      clickElement(resolveClickable(directButton));
+      await sleep(1200);
+      await activateTranscriptChipIfPresent();
+      if (parseTranscriptFromDOM()) return;
+    }
 
     // Score transcript-related controls and try a few best candidates.
     const candidates = Array.from(
@@ -1228,12 +1433,8 @@
         const target = resolveClickable(c.el);
         clickElement(target);
         await sleep(900);
-
-        const panelVisible = !!document.querySelector(
-          '[target-id*="transcript"], [class*="transcript-renderer"], [class*="transcript-search-panel-renderer"]'
-        );
-        const segCount = document.querySelectorAll('[class*="transcript-segment-renderer"]').length;
-        if (panelVisible || segCount > 0) return;
+        await activateTranscriptChipIfPresent();
+        if (parseTranscriptFromDOM()) return;
       }
     }
 
@@ -1242,7 +1443,6 @@
     if (showMore) {
       clickElement(resolveClickable(showMore));
       await sleep(600);
-      logTranscriptCandidates();
 
       const retryCandidates = Array.from(
         document.querySelectorAll('button, [class*="paper-button"], [class*="button-renderer"], [class*="paper-item"], [class*="menu-service-item-renderer"]')
@@ -1270,11 +1470,8 @@
         const target = resolveClickable(c.el);
         clickElement(target);
         await sleep(900);
-        const panelVisible = !!document.querySelector(
-          '[class*="engagement-panel-section-list-renderer"][target-id*="transcript"], [class*="transcript-renderer"], [class*="transcript-search-panel-renderer"]'
-        );
-        const segCount = document.querySelectorAll('[class*="transcript-segment-renderer"]').length;
-        if (panelVisible || segCount > 0) return;
+        await activateTranscriptChipIfPresent();
+        if (parseTranscriptFromDOM()) return;
       }
     }
   }
@@ -1284,8 +1481,14 @@
     if (parsed) return parsed;
     try {
       await tryOpenTranscriptPanel();
-      parsed = parseTranscriptFromDOM();
-      if (parsed) return parsed;
+      // Panel may be visible but segments not yet rendered — poll until they appear.
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline) {
+        await activateTranscriptChipIfPresent();
+        parsed = parseTranscriptFromDOM();
+        if (parsed) return parsed;
+        await sleep(200);
+      }
     } catch {}
     return null;
   }
@@ -1294,6 +1497,8 @@
     // Try json3 format first
     const json3Url = baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'fmt=json3';
     let cf = await contentFetchText(json3Url);
+    // If authenticated fetch returns empty, retry without credentials (URL may be signed for anonymous).
+    if (!cf.text) cf = await contentFetchText(json3Url, { credentials: 'omit' });
     let text = cf.text;
     if (!text) text = await bgFetchText(json3Url);
     if (text && text.trimStart().startsWith('{')) {
@@ -1363,11 +1568,18 @@
       let clientVersion;
       let clientName = 'WEB';
       let apiKey;
+      let visitorData;
+      let transcriptParams;
       try {
         const ytcfgData = window.wrappedJSObject?.ytcfg?.data_;
         clientVersion = ytcfgData?.INNERTUBE_CLIENT_VERSION;
         clientName = ytcfgData?.INNERTUBE_CLIENT_NAME || 'WEB';
         apiKey = ytcfgData?.INNERTUBE_API_KEY;
+        visitorData = ytcfgData?.VISITOR_DATA;
+      } catch {}
+      try {
+        const initialData = await getYTInitialData();
+        transcriptParams = extractTranscriptParams(initialData);
       } catch {}
 
       const result = await browser.runtime.sendMessage({
@@ -1376,6 +1588,9 @@
         clientVersion,
         clientName,
         apiKey,
+        visitorData,
+        transcriptParams,
+        watchUrl: location.href,
       });
 
       if (result?.data) {

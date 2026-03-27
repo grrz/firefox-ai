@@ -86,7 +86,7 @@ export AMO_JWT_SECRET="your-amo-jwt-secret"
 3. Run the signing script:
 
 ```bash
-./scripts/sign-addon.sh
+./scripts/sign-addon.js
 ```
 
 By default this signs an `unlisted` build and writes the signed `.xpi` to `web-ext-artifacts/`.
@@ -94,7 +94,7 @@ By default this signs an `unlisted` build and writes the signed `.xpi` to `web-e
 Optional:
 
 ```bash
-CHANNEL=listed AMO_METADATA_FILE=./amo-metadata.json ./scripts/sign-addon.sh
+CHANNEL=listed AMO_METADATA_FILE=./amo-metadata.json ./scripts/sign-addon.js
 ```
 
 If `web-ext` is not installed globally, the script falls back to `npx web-ext`.

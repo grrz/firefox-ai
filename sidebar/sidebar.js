@@ -34,6 +34,21 @@ let clearChatConfirmArmed = false;
 let actionButtonsCompactRaf = null;
 let actionButtonsResizeObserver = null;
 const sourceGroupCursors = new Map();
+const SAFE_HTML_TAGS = new Set([
+  'a', 'blockquote', 'br', 'button', 'code', 'details', 'div', 'em',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'li', 'ol', 'p', 'pre',
+  'span', 'strong', 'summary', 'table', 'tbody', 'td', 'th', 'thead',
+  'tr', 'ul',
+]);
+const SAFE_SVG_TAGS = new Set(['svg', 'path', 'polyline', 'line', 'circle', 'text']);
+const SAFE_HTML_ATTRS = new Set([
+  'class', 'hidden', 'id', 'open', 'rel', 'role', 'tabindex', 'target', 'title', 'type',
+]);
+const SAFE_SVG_ATTRS = new Set([
+  'aria-hidden', 'cx', 'cy', 'd', 'dominant-baseline', 'fill', 'focusable', 'height',
+  'points', 'r', 'stroke', 'stroke-linecap', 'stroke-linejoin', 'stroke-width',
+  'text-anchor', 'viewbox', 'width', 'x', 'x1', 'x2', 'y', 'y1', 'y2',
+]);
 
 // ========== DOM References ==========
 const $ = (sel) => document.querySelector(sel);
@@ -163,7 +178,7 @@ function rebuildUI() {
         const el = renderMessage(msg, i);
         if (msg.role === 'assistant') {
           const bubble = el.querySelector('.message-bubble');
-          bubble.innerHTML = renderStreamingBubble(msg.content, msg.thinking || '', { partial: false });
+          setSanitizedHtml(bubble, renderStreamingBubble(msg.content, msg.thinking || '', { partial: false }));
         }
         messagesEl.appendChild(el);
       }
@@ -330,12 +345,12 @@ function switchToWelcome() {
 
 // ========== Actions ==========
 function renderActionCards() {
-  actionCardsEl.innerHTML = ACTIONS.map(action => `
+  setSanitizedHtml(actionCardsEl, ACTIONS.map(action => `
     <div class="action-card" data-action="${action.id}">
       <div class="action-card-icon">${action.icon}</div>
       <div class="action-card-label">${action.label}</div>
     </div>
-  `).join('');
+  `).join(''));
 
   actionCardsEl.querySelectorAll('.action-card').forEach(card => {
     card.addEventListener('click', () => executeAction(card.dataset.action));
@@ -352,7 +367,7 @@ function renderActionBar() {
   const clearLabel = clearChatConfirmArmed ? 'Clear chat (confirm?)' : 'Clear chat';
   const currentLang = getResponseLanguage();
   const techModeLabel = state.technicalAnalysisMode ? 'Technical mode: ON' : 'Technical mode: OFF';
-  actionBarEl.innerHTML = [
+  setSanitizedHtml(actionBarEl, [
     '<div class="action-buttons-scroll" id="actionButtonsScroll">',
     actionButtons,
     '</div>',
@@ -371,7 +386,7 @@ function renderActionBar() {
     '    <button class="action-menu-item" id="menuOpenSettings">Settings</button>',
     '  </div>',
     '</div>',
-  ].join('');
+  ].join(''));
 
   actionBarEl.querySelectorAll('.action-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -553,20 +568,20 @@ function updateHistoryDropdownUI() {
   historyDropdownEl.classList.toggle('menu-closed', historyMenuEl.classList.contains('hidden'));
 
   const activeEntry = getActiveHistoryEntry(entries) || entries[entries.length - 1];
-  historyToggleBtn.innerHTML = [
+  setSanitizedHtml(historyToggleBtn, [
     `<span class="history-toggle-icon">${activeEntry.iconHtml}</span>`,
     `<span class="history-label">${escapeHtml(activeEntry.label)}</span>`,
     '<span class="history-toggle-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>',
-  ].join('');
+  ].join(''));
 
-  historyMenuEl.innerHTML = entries
+  setSanitizedHtml(historyMenuEl, entries
       .map((entry) => (
           `<button class="history-menu-item${entry.messageIndex === activeEntry.messageIndex ? ' active' : ''}" data-message-index="${entry.messageIndex}"${entry.messageIndex === activeEntry.messageIndex ? ' aria-current="true"' : ''}>` +
           `<span class="history-item-icon">${entry.iconHtml}</span>` +
           `<span class="history-item-label">${escapeHtml(entry.label)}</span>` +
           '</button>'
       ))
-      .join('');
+      .join(''));
 
   historyMenuEl.querySelectorAll('.history-menu-item').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -587,6 +602,103 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function sanitizeUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const lower = raw.toLowerCase();
+  if (lower.startsWith('source:') || lower.startsWith('source-group:') || lower.startsWith('mailto:')) {
+    return raw;
+  }
+  try {
+    const url = new URL(raw);
+    if (url.protocol === 'http:' || url.protocol === 'https:') return raw;
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function sanitizeHtmlNode(node) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return document.createTextNode(node.textContent || '');
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) return null;
+
+  const tagName = String(node.localName || '').toLowerCase();
+  const isSvg = SAFE_SVG_TAGS.has(tagName);
+  let element;
+
+  if (SAFE_HTML_TAGS.has(tagName)) {
+    element = document.createElement(tagName);
+  } else if (isSvg) {
+    element = document.createElementNS('http://www.w3.org/2000/svg', tagName);
+  } else {
+    const fragment = document.createDocumentFragment();
+    for (const child of Array.from(node.childNodes)) {
+      const safeChild = sanitizeHtmlNode(child);
+      if (safeChild) fragment.appendChild(safeChild);
+    }
+    return fragment;
+  }
+
+  for (const attr of Array.from(node.attributes)) {
+    const name = attr.name;
+    const lowerName = name.toLowerCase();
+    if (lowerName.startsWith('on')) continue;
+
+    if (lowerName === 'href') {
+      const safeHref = sanitizeUrl(attr.value);
+      if (safeHref) element.setAttribute('href', safeHref);
+      continue;
+    }
+
+    if (lowerName.startsWith('data-') || lowerName.startsWith('aria-')) {
+      element.setAttribute(name, attr.value);
+      continue;
+    }
+
+    if (!isSvg && SAFE_HTML_ATTRS.has(lowerName)) {
+      element.setAttribute(name, attr.value);
+      continue;
+    }
+
+    if (isSvg && SAFE_SVG_ATTRS.has(lowerName)) {
+      element.setAttribute(name, attr.value);
+    }
+  }
+
+  if (tagName === 'a') {
+    const href = element.getAttribute('href') || '';
+    if (href.startsWith('http://') || href.startsWith('https://')) {
+      element.setAttribute('target', '_blank');
+      element.setAttribute('rel', 'noopener noreferrer');
+    }
+  }
+
+  for (const child of Array.from(node.childNodes)) {
+    const safeChild = sanitizeHtmlNode(child);
+    if (safeChild) element.appendChild(safeChild);
+  }
+
+  return element;
+}
+
+function createSanitizedFragment(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(String(html || ''), 'text/html');
+  const fragment = document.createDocumentFragment();
+  for (const child of Array.from(doc.body.childNodes)) {
+    const safeChild = sanitizeHtmlNode(child);
+    if (safeChild) fragment.appendChild(safeChild);
+  }
+  return fragment;
+}
+
+function setSanitizedHtml(element, html) {
+  element.replaceChildren(createSanitizedFragment(html));
 }
 
 function renderUserTechMarker() {
@@ -706,21 +818,21 @@ function renderMessage(message, index) {
     const action = getActionById(message.actionId);
     if (action) {
       el.classList.add('message-user-action');
-      bubble.innerHTML = [
+      setSanitizedHtml(bubble, [
         '<details class="user-action-message">',
         `<summary class="user-action-summary"><span class="user-action-icon">${action.icon}</span><span class="user-action-label">${escapeHtml(action.label)}</span>${message.technicalModeUsed ? renderUserTechMarker() : ''}<span class="user-action-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span></summary>`,
         `<div class="user-action-text">${escapeHtml(message.content)}</div>`,
         '</details>',
-      ].join('');
+      ].join(''));
     } else {
-      bubble.innerHTML = `${escapeHtml(message.content)}${message.technicalModeUsed ? renderUserTechMarker() : ''}`;
+      setSanitizedHtml(bubble, `${escapeHtml(message.content)}${message.technicalModeUsed ? renderUserTechMarker() : ''}`);
     }
   } else if (message.role === 'assistant') {
-    bubble.innerHTML = `${renderAssistantContextBadge(message.contextMode)}${renderMarkdown(linkifySourceTags(message.content))}`;
+    setSanitizedHtml(bubble, `${renderAssistantContextBadge(message.contextMode)}${renderMarkdown(linkifySourceTags(message.content))}`);
   } else if (message.role === 'notice') {
-    bubble.innerHTML = renderContextLimitNotice(message.details || []);
+    setSanitizedHtml(bubble, renderContextLimitNotice(message.details || []));
   } else if (message.role === 'error') {
-    bubble.innerHTML = message.content;
+    setSanitizedHtml(bubble, message.content);
   }
 
   el.appendChild(bubble);
@@ -936,7 +1048,7 @@ function createStreamingElement(stream) {
   if (stream.streamedText || stream.streamedThinking) {
     renderStreamingBubble._timing = { start: stream.thinkingStartTime, elapsed: stream.thinkingElapsed };
     renderStreamingBubble._contextMode = stream.contextMode || '';
-    bubble.innerHTML = renderStreamingBubble(stream.streamedText, stream.streamedThinking);
+    setSanitizedHtml(bubble, renderStreamingBubble(stream.streamedText, stream.streamedThinking));
     renderStreamingBubble._timing = null;
     renderStreamingBubble._contextMode = '';
   }
@@ -956,7 +1068,7 @@ function updateStreamingDOM(stream) {
 
   renderStreamingBubble._timing = { start: stream.thinkingStartTime, elapsed: stream.thinkingElapsed };
   renderStreamingBubble._contextMode = stream.contextMode || '';
-  bubble.innerHTML = renderStreamingBubble(stream.streamedText, stream.streamedThinking);
+  setSanitizedHtml(bubble, renderStreamingBubble(stream.streamedText, stream.streamedThinking));
   renderStreamingBubble._timing = null;
   renderStreamingBubble._contextMode = '';
 
@@ -1088,7 +1200,7 @@ function finishStream(tabId, aborted) {
       if (stream.streamedText) {
         renderStreamingBubble._timing = { start: stream.thinkingStartTime, elapsed: stream.thinkingElapsed };
         renderStreamingBubble._contextMode = stream.contextMode || '';
-        bubble.innerHTML = renderStreamingBubble(stream.streamedText, stream.streamedThinking, { partial: false });
+        setSanitizedHtml(bubble, renderStreamingBubble(stream.streamedText, stream.streamedThinking, { partial: false }));
         renderStreamingBubble._timing = null;
         renderStreamingBubble._contextMode = '';
 
@@ -1097,7 +1209,7 @@ function finishStream(tabId, aborted) {
         if (stream.contextMode) msg.contextMode = stream.contextMode;
         state.messages.push(msg);
       } else if (!aborted) {
-        bubble.innerHTML = '<em>No response received.</em>';
+        setSanitizedHtml(bubble, '<em>No response received.</em>');
       } else {
         streamEl.remove();
       }
@@ -1116,7 +1228,7 @@ function appendErrorMessage(html) {
   el.className = 'message message-error';
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
-  bubble.innerHTML = html;
+  setSanitizedHtml(bubble, html);
 
   const settingsLink = bubble.querySelector('#openSettings');
   if (settingsLink) {

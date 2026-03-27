@@ -83,12 +83,6 @@ function getMessageCount(entry) {
   return entry.messages.length;
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 async function renderSavedChats() {
   const saved = await browser.storage.local.get(PAGE_CHATS_STORAGE_KEY);
   const chats = saved?.[PAGE_CHATS_STORAGE_KEY];
@@ -120,12 +114,28 @@ async function renderSavedChats() {
     return;
   }
 
-  listEl.innerHTML = filteredEntries.map((entry) => `
-    <div class="saved-chat-item">
-      <div class="saved-chat-url"><a href="${escapeHtml(entry.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(entry.url)}</a></div>
-      <div class="saved-chat-meta">${entry.messageCount} messages • Updated: ${escapeHtml(formatDate(entry.updatedAt))}</div>
-    </div>
-  `).join('');
+  listEl.replaceChildren();
+  for (const entry of filteredEntries) {
+    const itemEl = document.createElement('div');
+    itemEl.className = 'saved-chat-item';
+
+    const urlWrapEl = document.createElement('div');
+    urlWrapEl.className = 'saved-chat-url';
+    const linkEl = document.createElement('a');
+    linkEl.href = entry.url;
+    linkEl.target = '_blank';
+    linkEl.rel = 'noopener noreferrer';
+    linkEl.textContent = entry.url;
+    urlWrapEl.appendChild(linkEl);
+
+    const metaItemEl = document.createElement('div');
+    metaItemEl.className = 'saved-chat-meta';
+    metaItemEl.textContent = `${entry.messageCount} messages • Updated: ${formatDate(entry.updatedAt)}`;
+
+    itemEl.appendChild(urlWrapEl);
+    itemEl.appendChild(metaItemEl);
+    listEl.appendChild(itemEl);
+  }
 }
 
 async function saveForm() {
