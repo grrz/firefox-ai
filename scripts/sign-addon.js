@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const rootDir = path.resolve(__dirname, '..');
+
+require('dotenv').config({ path: path.join(rootDir, '.env') });
 let sourceDir = process.env.SOURCE_DIR || rootDir;
 let artifactsDir = process.env.ARTIFACTS_DIR || path.join(rootDir, 'web-ext-artifacts');
 let channel = process.env.CHANNEL || 'unlisted';
