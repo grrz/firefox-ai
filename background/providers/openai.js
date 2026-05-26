@@ -43,6 +43,7 @@ export class OpenAIProvider extends BaseProvider {
     }
 
     let fullText = '';
+    let reasoningText = '';
     for await (const { data } of parseSSEStream(response.body, signal)) {
       if (data === '[DONE]') break;
       try {
@@ -51,6 +52,7 @@ export class OpenAIProvider extends BaseProvider {
         // Reasoning/thinking tokens (OpenAI o-series, Grok thinking)
         const reasoningToken = delta?.reasoning_content ?? delta?.reasoning;
         if (reasoningToken) {
+          reasoningText += reasoningToken;
           onThinkingToken?.(reasoningToken);
         }
         const token = delta?.content;
@@ -61,6 +63,11 @@ export class OpenAIProvider extends BaseProvider {
       } catch {
         // Skip unparseable chunks
       }
+    }
+
+    if (!fullText && reasoningText) {
+      onToken?.(reasoningText);
+      return reasoningText;
     }
 
     return fullText;

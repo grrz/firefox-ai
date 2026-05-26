@@ -215,7 +215,7 @@ export class LMStudioProvider extends OpenAIProvider {
       const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
       console.log('[tools-debug] tool step %d: toolCalls=%d, hasContent=%s', step, toolCalls.length, !!msg.content);
       if (toolCalls.length === 0) {
-        const finalText = String(msg?.content || '');
+        const finalText = String(msg?.content || msg?.reasoning_content || msg?.reasoning || '');
         if (finalText) onToken?.(finalText);
         return finalText;
       }
