@@ -44,11 +44,14 @@ export class OpenAIProvider extends BaseProvider {
 
     let fullText = '';
     let reasoningText = '';
+    let finishReason = null;
     for await (const { data } of parseSSEStream(response.body, signal)) {
       if (data === '[DONE]') break;
       try {
         const parsed = JSON.parse(data);
-        const delta = parsed.choices?.[0]?.delta;
+        const choice = parsed.choices?.[0];
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+        const delta = choice?.delta;
         // Reasoning/thinking tokens (OpenAI o-series, Grok thinking)
         const reasoningToken = delta?.reasoning_content ?? delta?.reasoning;
         if (reasoningToken) {
@@ -67,7 +70,34 @@ export class OpenAIProvider extends BaseProvider {
 
     if (!fullText && reasoningText) {
       onToken?.(reasoningText);
-      return reasoningText;
+      fullText = reasoningText;
+    }
+
+    if (finishReason === 'length') {
+      throw new ProviderError('Response stopped because the model reached its output limit.', {
+        retryable: true,
+        code: 'incomplete_response',
+        details: {
+          finishReason,
+          receivedCharacters: fullText.length,
+        },
+        partialText: fullText,
+      });
+    }
+
+    if (finishReason === 'content_filter') {
+      throw new ProviderError('Response was blocked by the provider content filter.', {
+        code: 'content_filter',
+        details: { finishReason },
+      });
+    }
+
+    if (!fullText) {
+      throw new ProviderError('The provider returned an empty response.', {
+        retryable: true,
+        code: 'empty_response',
+        details: { finishReason },
+      });
     }
 
     return fullText;

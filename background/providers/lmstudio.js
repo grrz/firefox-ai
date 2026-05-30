@@ -210,13 +210,52 @@ export class LMStudioProvider extends OpenAIProvider {
         throw new ProviderError(`LM Studio API error (${response.status}): ${text}`, { status: response.status });
       }
 
-      const parsed = await response.json().catch(() => ({}));
+      const rawText = await response.text().catch(() => '');
+      let parsed = {};
+      try {
+        parsed = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        throw new ProviderError('LM Studio returned invalid JSON.', {
+          retryable: true,
+          code: 'invalid_response',
+          details: rawText.slice(0, 2000),
+        });
+      }
       const msg = parsed?.choices?.[0]?.message || {};
+      const finishReason = parsed?.choices?.[0]?.finish_reason || null;
       const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
       console.log('[tools-debug] tool step %d: toolCalls=%d, hasContent=%s', step, toolCalls.length, !!msg.content);
       if (toolCalls.length === 0) {
         const finalText = String(msg?.content || msg?.reasoning_content || msg?.reasoning || '');
         if (finalText) onToken?.(finalText);
+        if (finishReason === 'length') {
+          throw new ProviderError('LM Studio stopped because the model reached its output limit.', {
+            retryable: true,
+            code: 'incomplete_response',
+            details: {
+              finishReason,
+              receivedCharacters: finalText.length,
+            },
+            partialText: finalText,
+          });
+        }
+        if (finishReason === 'content_filter') {
+          throw new ProviderError('LM Studio blocked the response with a content filter.', {
+            code: 'content_filter',
+            details: { finishReason },
+          });
+        }
+        if (!finalText) {
+          throw new ProviderError('LM Studio returned an empty response.', {
+            retryable: true,
+            code: 'empty_response',
+            details: {
+              finishReason,
+              responseId: parsed?.id || null,
+              model: parsed?.model || this.getModel(),
+            },
+          });
+        }
         return finalText;
       }
 

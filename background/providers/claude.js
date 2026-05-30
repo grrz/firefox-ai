@@ -85,6 +85,7 @@ export class ClaudeProvider extends BaseProvider {
 
     let fullText = '';
     let currentBlockType = null;
+    let stopReason = null;
 
     for await (const { event, data } of parseSSEStream(response.body, signal)) {
       if (data === '[DONE]') break;
@@ -106,10 +107,39 @@ export class ClaudeProvider extends BaseProvider {
               onToken?.(token);
             }
           }
+        } else if (event === 'message_delta' || parsed.type === 'message_delta') {
+          if (parsed.delta?.stop_reason) stopReason = parsed.delta.stop_reason;
         }
       } catch {
         // Skip unparseable chunks
       }
+    }
+
+    if (stopReason === 'max_tokens') {
+      throw new ProviderError('Response stopped because the model reached its output limit.', {
+        retryable: true,
+        code: 'incomplete_response',
+        details: {
+          stopReason,
+          receivedCharacters: fullText.length,
+        },
+        partialText: fullText,
+      });
+    }
+
+    if (stopReason === 'refusal') {
+      throw new ProviderError('Response was refused by the provider.', {
+        code: 'content_filter',
+        details: { stopReason },
+      });
+    }
+
+    if (!fullText) {
+      throw new ProviderError('The provider returned an empty response.', {
+        retryable: true,
+        code: 'empty_response',
+        details: { stopReason },
+      });
     }
 
     return fullText;

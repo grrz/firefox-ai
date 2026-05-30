@@ -6,36 +6,59 @@ export async function* parseSSEStream(body, signal) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let currentEvent = '';
+  let currentData = [];
+
+  const flushMessage = () => {
+    if (currentData.length === 0) return null;
+    const message = {
+      event: currentEvent,
+      data: currentData.join('\n'),
+    };
+    currentEvent = '';
+    currentData = [];
+    return message;
+  };
+
+  const processLine = (rawLine) => {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (line === '') return flushMessage();
+    if (line.startsWith(':')) return null;
+
+    if (line.startsWith('event:')) {
+      currentEvent = line.slice(6).replace(/^ /, '');
+    } else if (line.startsWith('data:')) {
+      currentData.push(line.slice(5).replace(/^ /, ''));
+    }
+    return null;
+  };
 
   try {
     while (true) {
       if (signal?.aborted) break;
 
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        buffer += decoder.decode();
+        if (buffer) {
+          const message = processLine(buffer);
+          if (message) yield message;
+          buffer = '';
+        }
+        const message = flushMessage();
+        if (message) yield message;
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
 
-      const lines = buffer.split('\n');
-      // Keep the last potentially incomplete line in the buffer
-      buffer = lines.pop() || '';
-
-      let currentEvent = '';
-      let currentData = '';
-
-      for (const line of lines) {
-        if (line.startsWith('event:')) {
-          currentEvent = line.slice(6).trim();
-        } else if (line.startsWith('data:')) {
-          currentData = line.slice(5).trim();
-        } else if (line === '') {
-          // Empty line = end of SSE message
-          if (currentData) {
-            yield { event: currentEvent, data: currentData };
-          }
-          currentEvent = '';
-          currentData = '';
-        }
+      let newlineIndex = buffer.indexOf('\n');
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        const message = processLine(line);
+        if (message) yield message;
+        newlineIndex = buffer.indexOf('\n');
       }
     }
   } finally {

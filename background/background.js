@@ -3,6 +3,7 @@ import {RESPONSE_LANGUAGES, SYSTEM_PROMPT} from '../shared/constants.js';
 import {OpenAIProvider} from './providers/openai.js';
 import {ClaudeProvider} from './providers/claude.js';
 import {LMStudioProvider} from './providers/lmstudio.js';
+import {ProviderError} from './providers/base.js';
 
 const PAGE_CHATS_STORAGE_KEY = 'pageChatsByUrl';
 const MAX_SAVED_PAGE_CHATS = 50;
@@ -100,10 +101,93 @@ function mergeContextLimits(allLimitEntries) {
   };
 }
 
-function shouldRetryLMStudioWithoutTools(err, providerId, attemptedToolMode) {
+function shouldRetryLMStudioWithoutTools(err, providerId, attemptedToolMode, streamedText = '') {
   if (!attemptedToolMode || providerId !== 'lmstudio' || !err) return false;
+  if (String(streamedText || '').trim()) return false;
   const message = String(err?.message || '');
-  return /No user query found in messages|jinja template/i.test(message);
+  return (
+    /No user query found in messages|jinja template/i.test(message) ||
+    err?.code === 'empty_response' ||
+    err?.code === 'invalid_response'
+  );
+}
+
+function shouldContinueIncompleteResponse(err, streamedText) {
+  if (!err || err.code !== 'incomplete_response') return false;
+  return !!String(streamedText || err.partialText || '').trim();
+}
+
+function buildContinuationMessages(baseMessages, partialText) {
+  return [
+    ...baseMessages,
+    { role: 'assistant', content: String(partialText || '') },
+    {
+      role: 'user',
+      content: 'Continue the previous answer from exactly where it stopped. Do not repeat completed text, do not restart, and keep the same language and formatting.',
+    },
+  ];
+}
+
+function stringifyErrorDetails(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function getProviderModel(settings) {
+  try {
+    return getProviderConfig(settings)?.model || '';
+  } catch {
+    return '';
+  }
+}
+
+function getFriendlyErrorMessage(err, streamedText = '') {
+  const hasPartial = !!String(streamedText || err?.partialText || '').trim();
+  if (err?.userMessage) return err.userMessage;
+  if (err?.code === 'incomplete_response') {
+    return hasPartial
+      ? 'The model stopped before finishing. I kept the partial answer above.'
+      : 'The model stopped before finishing and did not return visible text.';
+  }
+  if (err?.code === 'empty_response') {
+    return 'The model finished without returning visible text. Your request was not lost; you can try again.';
+  }
+  if (err?.code === 'invalid_response') {
+    return 'The model returned a response the extension could not read.';
+  }
+  if (err?.code === 'content_filter') {
+    return 'The provider blocked this response.';
+  }
+  if (/Network error/i.test(String(err?.message || ''))) {
+    return 'The extension could not reach the selected AI provider.';
+  }
+  return 'The AI request failed before a complete answer was received.';
+}
+
+function buildTechnicalErrorDetails(err, settings, streamedText = '') {
+  const lines = [
+    `Provider: ${settings?.activeProvider || 'unknown'}`,
+    `Model: ${getProviderModel(settings) || 'unknown'}`,
+    `Error name: ${err?.name || 'Error'}`,
+    `Message: ${err?.message || 'Unknown error'}`,
+  ];
+
+  if (err?.code) lines.push(`Code: ${err.code}`);
+  if (err?.status) lines.push(`HTTP status: ${err.status}`);
+  lines.push(`Retryable: ${err?.retryable ? 'yes' : 'no'}`);
+  lines.push(`Partial response characters: ${String(streamedText || err?.partialText || '').length}`);
+
+  const details = stringifyErrorDetails(err?.details);
+  if (details) {
+    lines.push('', 'Details:', details);
+  }
+
+  return lines.join('\n');
 }
 
 function normalizePageUrl(rawUrl) {
@@ -312,14 +396,28 @@ browser.runtime.onConnect.addListener((port) => {
       requestChatOptions = chatOptions && typeof chatOptions === 'object' ? chatOptions : {};
       streamedText = '';
       streamedThinking = '';
+      let settings = null;
 
       try {
-        const settings = await loadSettings();
+        settings = await loadSettings();
         const provider = createProvider(settings);
 
         const validation = provider.validate();
         if (!validation.valid) {
-          port.postMessage({ type: 'error', error: validation.error, retryable: false });
+          const err = new ProviderError(validation.error, {
+            code: 'invalid_settings',
+            details: { provider: settings.activeProvider },
+          });
+          port.postMessage({
+            type: 'error',
+            error: validation.error,
+            userMessage: validation.error,
+            technicalDetails: buildTechnicalErrorDetails(err, settings, streamedText),
+            retryable: false,
+            status: null,
+            code: err.code,
+            partial: false,
+          });
           return;
         }
 
@@ -339,59 +437,75 @@ browser.runtime.onConnect.addListener((port) => {
 
         port.postMessage({ type: 'stream_start' });
 
+        const buildSendOptions = (toolMode) => ({
+          signal: abortController.signal,
+          pageContext,
+          useToolMode: toolMode,
+          onThinkingToken: (token) => {
+            streamedThinking += token;
+            try {
+              port.postMessage({ type: 'stream_thinking', token });
+            } catch {
+              abortController?.abort();
+            }
+          },
+          onToken: (token) => {
+            streamedText += token;
+            try {
+              port.postMessage({ type: 'stream_token', token });
+            } catch {
+              // Port disconnected
+              abortController?.abort();
+            }
+          },
+        });
+
+        const sendProviderMessage = (outgoingMessages, toolMode) => (
+          provider.sendMessage(outgoingMessages, buildSendOptions(toolMode))
+        );
+
         try {
-          await provider.sendMessage(chatMessages, {
-            signal: abortController.signal,
-            pageContext,
-            useToolMode,
-            onThinkingToken: (token) => {
-              streamedThinking += token;
-              try {
-                port.postMessage({ type: 'stream_thinking', token });
-              } catch {
-                abortController?.abort();
-              }
-            },
-            onToken: (token) => {
-              streamedText += token;
-              try {
-                port.postMessage({ type: 'stream_token', token });
-              } catch {
-                // Port disconnected
-                abortController?.abort();
-              }
-            },
-          });
+          await sendProviderMessage(chatMessages, useToolMode);
         } catch (err) {
-          if (!shouldRetryLMStudioWithoutTools(err, settings.activeProvider, useToolMode)) {
+          if (shouldRetryLMStudioWithoutTools(err, settings.activeProvider, useToolMode, streamedText)) {
+            streamedText = '';
+            streamedThinking = '';
+            try {
+              port.postMessage({ type: 'context_mode', mode: 'full_context' });
+            } catch {}
+
+            await sendProviderMessage(fullContextMessages, false);
+          } else if (shouldContinueIncompleteResponse(err, streamedText)) {
+            try {
+              const continuationMessages = buildContinuationMessages(chatMessages, streamedText);
+              await sendProviderMessage(continuationMessages, false);
+            } catch (continueErr) {
+              continueErr.details = {
+                previousError: {
+                  message: err?.message || '',
+                  code: err?.code || null,
+                  details: err?.details || null,
+                },
+                continuationError: {
+                  message: continueErr?.message || '',
+                  code: continueErr?.code || null,
+                  details: continueErr?.details || null,
+                },
+              };
+              throw continueErr;
+            }
+          } else {
             throw err;
           }
+        }
 
-          streamedText = '';
-          streamedThinking = '';
-          try {
-            port.postMessage({ type: 'context_mode', mode: 'full_context' });
-          } catch {}
-
-          await provider.sendMessage(fullContextMessages, {
-            signal: abortController.signal,
-            pageContext,
-            useToolMode: false,
-            onThinkingToken: (token) => {
-              streamedThinking += token;
-              try {
-                port.postMessage({ type: 'stream_thinking', token });
-              } catch {
-                abortController?.abort();
-              }
-            },
-            onToken: (token) => {
-              streamedText += token;
-              try {
-                port.postMessage({ type: 'stream_token', token });
-              } catch {
-                abortController?.abort();
-              }
+        if (!String(streamedText || '').trim()) {
+          throw new ProviderError('The provider returned an empty response.', {
+            retryable: true,
+            code: 'empty_response',
+            details: {
+              provider: settings.activeProvider,
+              contextMode,
             },
           });
         }
@@ -414,7 +528,12 @@ browser.runtime.onConnect.addListener((port) => {
           port.postMessage({
             type: 'error',
             error: err.message || 'An unexpected error occurred',
+            userMessage: getFriendlyErrorMessage(err, streamedText),
+            technicalDetails: buildTechnicalErrorDetails(err, settings, streamedText),
             retryable: err.retryable || false,
+            status: err.status || null,
+            code: err.code || null,
+            partial: !!String(streamedText || '').trim(),
           });
         } catch {}
       } finally {
@@ -486,7 +605,7 @@ browser.runtime.onMessage.addListener(async (message) => {
       const { videoId, clientVersion, clientName, apiKey, visitorData, transcriptParams, watchUrl } = message;
       if (!videoId) return { error: 'Missing videoId' };
 
-      let params = '';
+      let params;
       if (typeof transcriptParams === 'string' && transcriptParams.trim()) {
         params = transcriptParams.trim();
       } else {

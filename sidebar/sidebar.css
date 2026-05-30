@@ -724,10 +724,74 @@ body {
   font-size: 13px;
 }
 
+.error-message-text,
+.error-hint {
+  margin-top: 4px;
+}
+
+.error-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .message-error .error-link {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
   color: var(--accent);
   cursor: pointer;
   text-decoration: underline;
+  font: inherit;
+}
+
+.error-details {
+  margin-top: 8px;
+  border-top: 1px solid var(--error-border);
+  padding-top: 6px;
+}
+
+.error-details summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+  list-style: none;
+}
+
+.error-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.error-details summary::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s ease;
+}
+
+.error-details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.error-details pre {
+  margin-top: 6px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: color-mix(in srgb, CanvasText 8%, Canvas);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 /* ========== Action Bar (Chat State) ========== */

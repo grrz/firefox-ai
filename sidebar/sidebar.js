@@ -12,7 +12,7 @@ const SCROLL_BOTTOM_THRESHOLD_PX = 24;
 // Display state for the currently visible tab
 const state = {
   mode: 'welcome', // 'welcome' | 'chat'
-  messages: [],     // {role: 'user'|'assistant'|'notice', content: string}
+  messages: [],     // {role: 'user'|'assistant'|'notice'|'error', content: string}
   draftText: '',
   pageContext: null,
   technicalAnalysisMode: false,
@@ -174,7 +174,7 @@ function rebuildUI() {
     chatState.classList.remove('hidden');
     for (let i = 0; i < state.messages.length; i++) {
       const msg = state.messages[i];
-      if (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'notice') {
+      if (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'notice' || msg.role === 'error') {
         const el = renderMessage(msg, i);
         if (msg.role === 'assistant') {
           const bubble = el.querySelector('.message-bubble');
@@ -315,6 +315,7 @@ function switchToWelcome() {
   // Abort stream for current tab if any
   const stream = activeStreams.get(state.currentTabId);
   if (stream) {
+    stream.userAborted = true;
     stream.port?.postMessage({ type: 'abort' });
   }
 
@@ -723,6 +724,65 @@ function renderAssistantContextBadge(mode) {
   return '';
 }
 
+function normalizeErrorMessage(input) {
+  if (input && typeof input === 'object') {
+    return {
+      role: 'error',
+      title: input.title || 'Something went wrong',
+      message: input.message || input.userMessage || input.error || input.content || 'The AI request failed.',
+      technicalDetails: input.technicalDetails || '',
+      retryable: !!input.retryable,
+      action: input.action || '',
+      code: input.code || '',
+      status: input.status || null,
+      partial: !!input.partial,
+    };
+  }
+  return {
+    role: 'error',
+    title: 'Something went wrong',
+    message: String(input || 'The AI request failed.'),
+    technicalDetails: '',
+    retryable: false,
+    action: '',
+    code: '',
+    status: null,
+    partial: false,
+  };
+}
+
+function renderErrorMessage(message) {
+  const normalized = normalizeErrorMessage(message);
+  const detailText = String(normalized.technicalDetails || '').trim();
+  const parts = [
+    `<strong>${escapeHtml(normalized.title)}</strong>`,
+    `<div class="error-message-text">${escapeHtml(normalized.message)}</div>`,
+  ];
+
+  if (normalized.action === 'settings') {
+    parts.push('<button type="button" class="error-link" data-error-action="settings">Open Settings</button>');
+  }
+  if (normalized.retryable) {
+    parts.push('<div class="error-hint">You can try again.</div>');
+  }
+  if (detailText) {
+    parts.push([
+      '<details class="error-details">',
+      '<summary>Technical details</summary>',
+      `<pre>${escapeHtml(detailText)}</pre>`,
+      '</details>',
+    ].join(''));
+  }
+
+  return parts.join('');
+}
+
+function bindErrorBubbleActions(bubble) {
+  bubble.querySelectorAll('[data-error-action="settings"]').forEach((link) => {
+    link.addEventListener('click', () => browser.runtime.openOptionsPage());
+  });
+}
+
 function getSourceAnchorsMap() {
   const map = state.pageContext?.sourceAnchors;
   if (!map || typeof map !== 'object') return {};
@@ -840,7 +900,8 @@ function renderMessage(message, index) {
   } else if (message.role === 'notice') {
     setSanitizedHtml(bubble, renderContextLimitNotice(message.details || []));
   } else if (message.role === 'error') {
-    setSanitizedHtml(bubble, message.content);
+    setSanitizedHtml(bubble, renderErrorMessage(message));
+    bindErrorBubbleActions(bubble);
   }
 
   el.appendChild(bubble);
@@ -920,7 +981,10 @@ function checkApiKey() {
   if (providerDef.requiresKey && !providerSettings?.apiKey) {
     return {
       valid: false,
-      error: `No API key configured for ${providerDef.name}. <span class="error-link" id="openSettings">Open Settings</span> to add one.`,
+      title: 'Missing API key',
+      message: `No API key configured for ${providerDef.name}.`,
+      action: 'settings',
+      technicalDetails: `Provider: ${providerId}\nRequired setting: apiKey`,
     };
   }
   return { valid: true };
@@ -938,7 +1002,7 @@ function handleSend(meta = {}) {
     userInput.value = '';
     autoResize();
     appendMessage({ role: 'user', content: text });
-    appendErrorMessage(keyCheck.error);
+    appendErrorMessage(keyCheck);
     return;
   }
 
@@ -1114,6 +1178,7 @@ async function startStreaming() {
     thinkingStartTime: 0,
     thinkingElapsed: 0,
     contextMode: '',
+    userAborted: false,
   };
   activeStreams.set(tabId, stream);
 
@@ -1142,22 +1207,35 @@ async function startStreaming() {
     } else if (msg.type === 'stream_end') {
       finishStream(tabId, msg.aborted);
     } else if (msg.type === 'error') {
-      finishStream(tabId, false);
-      if (state.currentTabId === tabId) {
-        let errorHtml = escapeHtml(msg.error);
-        if (msg.error.includes('API key')) {
-          errorHtml += ` <span class="error-link" id="openSettings">Open Settings</span>`;
-        }
-        if (msg.retryable) {
-          errorHtml += ' (you can try again)';
-        }
-        appendErrorMessage(errorHtml);
-      }
+      finishStream(tabId, !stream.streamedText);
+      appendErrorMessage({
+        title: msg.partial ? 'Answer may be incomplete' : 'Request failed',
+        message: msg.userMessage || msg.error || 'The AI request failed.',
+        technicalDetails: msg.technicalDetails || msg.error || '',
+        retryable: !!msg.retryable,
+        code: msg.code || '',
+        status: msg.status || null,
+        partial: !!msg.partial,
+      }, { tabId });
     }
   });
 
   port.onDisconnect.addListener(() => {
-    if (activeStreams.has(tabId)) finishStream(tabId, true);
+    const disconnectedStream = activeStreams.get(tabId);
+    if (!disconnectedStream) return;
+    finishStream(tabId, true);
+    if (!disconnectedStream.userAborted) {
+      appendErrorMessage({
+        title: 'Connection interrupted',
+        message: 'The request stopped before the extension received a complete answer.',
+        technicalDetails: [
+          'The sidebar port disconnected while an AI request was still active.',
+          `Provider: ${state.settings?.activeProvider || 'unknown'}`,
+          `Received characters before disconnect: ${disconnectedStream.streamedText.length}`,
+        ].join('\n'),
+        retryable: true,
+      }, { tabId });
+    }
   });
 
   // Build messages for the API
@@ -1217,7 +1295,18 @@ function finishStream(tabId, aborted) {
         if (stream.contextMode) msg.contextMode = stream.contextMode;
         state.messages.push(msg);
       } else if (!aborted) {
-        setSanitizedHtml(bubble, '<em>No response received.</em>');
+        const msg = normalizeErrorMessage({
+          title: 'No response received',
+          message: 'The provider finished without returning visible text.',
+          technicalDetails: [
+            `Provider: ${state.settings?.activeProvider || 'unknown'}`,
+            `Context mode: ${stream.contextMode || 'unknown'}`,
+          ].join('\n'),
+          retryable: true,
+        });
+        setSanitizedHtml(bubble, renderErrorMessage(msg));
+        bindErrorBubbleActions(bubble);
+        state.messages.push(msg);
       } else {
         streamEl.remove();
       }
@@ -1231,25 +1320,25 @@ function finishStream(tabId, aborted) {
   }
 }
 
-function appendErrorMessage(html) {
-  const el = document.createElement('div');
-  el.className = 'message message-error';
-  const bubble = document.createElement('div');
-  bubble.className = 'message-bubble';
-  setSanitizedHtml(bubble, html);
-
-  const settingsLink = bubble.querySelector('#openSettings');
-  if (settingsLink) {
-    settingsLink.addEventListener('click', () => browser.runtime.openOptionsPage());
+function appendMessageForTab(tabId, message) {
+  if (state.currentTabId === tabId) {
+    appendMessage(message);
+    return;
   }
 
-  el.appendChild(bubble);
-  messagesEl.appendChild(el);
-  scrollToBottom();
+  const tabState = tabStates.get(tabId);
+  if (!tabState) return;
+  tabState.messages.push(message);
+  tabStates.set(tabId, tabState);
+}
+
+function appendErrorMessage(input, { tabId = state.currentTabId } = {}) {
+  appendMessageForTab(tabId, normalizeErrorMessage(input));
 }
 
 function abortStreaming() {
   const stream = activeStreams.get(state.currentTabId);
+  if (stream) stream.userAborted = true;
   stream?.port?.postMessage({ type: 'abort' });
 }
 
@@ -1396,7 +1485,8 @@ function cloneChatMessages(messages) {
     .filter(msg => msg && (
       msg.role === 'user' ||
       msg.role === 'assistant' ||
-      msg.role === 'notice'
+      msg.role === 'notice' ||
+      msg.role === 'error'
     ))
     .map(msg => {
       const cloned = { role: msg.role, content: typeof msg.content === 'string' ? msg.content : '' };
@@ -1413,6 +1503,16 @@ function cloneChatMessages(messages) {
         if (typeof msg.noticeKey === 'string') cloned.noticeKey = msg.noticeKey;
         if (typeof msg.signature === 'string') cloned.signature = msg.signature;
         if (Array.isArray(msg.details)) cloned.details = msg.details.map(x => String(x));
+      }
+      if (msg.role === 'error') {
+        if (typeof msg.title === 'string') cloned.title = msg.title;
+        if (typeof msg.message === 'string') cloned.message = msg.message;
+        if (typeof msg.technicalDetails === 'string') cloned.technicalDetails = msg.technicalDetails;
+        if (typeof msg.retryable === 'boolean') cloned.retryable = msg.retryable;
+        if (typeof msg.action === 'string') cloned.action = msg.action;
+        if (typeof msg.code === 'string') cloned.code = msg.code;
+        if (msg.status != null) cloned.status = msg.status;
+        if (typeof msg.partial === 'boolean') cloned.partial = msg.partial;
       }
       return cloned;
     });

@@ -1,9 +1,20 @@
 export class ProviderError extends Error {
-  constructor(message, { retryable = false, status = null } = {}) {
+  constructor(message, {
+    retryable = false,
+    status = null,
+    code = null,
+    details = null,
+    userMessage = null,
+    partialText = '',
+  } = {}) {
     super(message);
     this.name = 'ProviderError';
     this.retryable = retryable;
     this.status = status;
+    this.code = code;
+    this.details = details;
+    this.userMessage = userMessage;
+    this.partialText = partialText;
   }
 }
 
