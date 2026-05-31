@@ -40,6 +40,10 @@ function buildChatMessages(messages, pageContext, settings, options = {}) {
     systemContent += '\nFor each meaningful claim or list item, append one or more relevant tags like [s12] or [s12, s18].';
     systemContent += '\nOnly use source tags that exist in the context; never invent tags.';
   }
+  if (Array.isArray(pageContext?.comments) && pageContext.comments.length > 0) {
+    systemContent += `\n\nA separate user comments/discussion context is available with ${pageContext.comments.length} extracted comments.`;
+    systemContent += '\nWhen the user asks about comments, discussion, replies, audience reaction, or commenter opinions, use the comments/discussion context specifically instead of the article body.';
+  }
   if (pageContext?.technicalContext) {
     systemContent += '\n\nTechnical DOM/CSS/JS analysis mode is enabled.';
     systemContent += '\nWhen the user asks implementation/debugging questions, use the TECHNICAL CONTEXT section.';
@@ -109,7 +113,8 @@ function shouldRetryLMStudioWithoutTools(err, providerId, attemptedToolMode, str
   return (
     /No user query found in messages|jinja template/i.test(message) ||
     err?.code === 'empty_response' ||
-    err?.code === 'invalid_response'
+    err?.code === 'invalid_response' ||
+    err?.code === 'tool_timeout'
   );
 }
 
@@ -160,6 +165,9 @@ function getFriendlyErrorMessage(err, streamedText = '') {
   }
   if (err?.code === 'invalid_response') {
     return 'The model returned a response the extension could not read.';
+  }
+  if (err?.code === 'tool_timeout') {
+    return 'The local model spent too long deciding how to use page tools. I stopped that attempt so it would not run forever.';
   }
   if (err?.code === 'content_filter') {
     return 'The provider blocked this response.';
@@ -358,6 +366,10 @@ async function getDistilledContentForTab(tabId, options = {}) {
 
   const textContent = parts.join('\n\n---\n\n');
   const wordCount = textContent.split(/\s+/).filter(Boolean).length;
+  const comments = [
+    ...(Array.isArray(topFrame.data.comments) ? topFrame.data.comments : []),
+    ...includedChildFrames.flatMap((f) => Array.isArray(f.data.comments) ? f.data.comments : []),
+  ].slice(0, 120);
 
   return {
     title: topFrame.data.title || tab.title || '',
@@ -367,6 +379,7 @@ async function getDistilledContentForTab(tabId, options = {}) {
     textContent,
     wordCount,
     sourceAnchors: topFrame.data.sourceAnchors || {},
+    comments,
     technicalContext: topFrame.data.technicalContext || null,
     contextLimits,
   };

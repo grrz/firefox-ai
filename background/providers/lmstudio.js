@@ -1,6 +1,13 @@
 import { OpenAIProvider } from './openai.js';
 import { ProviderError } from './base.js';
 
+const QWEN_NO_THINK_PREFIX = '/no_think';
+const QWEN_THINKING_BUDGET_TOKENS = 512;
+const QWEN_STREAM_MAX_TOKENS = 4096;
+const QWEN_TOOL_MAX_TOKENS = 2048;
+const TOOL_PROBE_TIMEOUT_MS = 30000;
+const TOOL_STEP_TIMEOUT_MS = 120000;
+
 export class LMStudioProvider extends OpenAIProvider {
   static toolSupportCache = new Map();
 
@@ -25,41 +32,147 @@ export class LMStudioProvider extends OpenAIProvider {
     return `${base}/v1/chat/completions`;
   }
 
+  isQwenModel() {
+    return /qwen/i.test(this.getModel() || '');
+  }
+
+  isThinkingOnlyModel() {
+    return /(qwq|thinking)/i.test(this.getModel() || '');
+  }
+
+  withQwenNoThink(messages) {
+    if (!this.isQwenModel() || !Array.isArray(messages)) return messages;
+
+    const prepared = messages.map((message) => ({ ...message }));
+    const lastUserIndex = prepared.map((m) => m.role).lastIndexOf('user');
+    if (lastUserIndex === -1) return prepared;
+
+    const content = String(prepared[lastUserIndex].content || '');
+    if (/^\s*\/(?:no_?think|think)\b/i.test(content)) return prepared;
+
+    prepared[lastUserIndex] = {
+      ...prepared[lastUserIndex],
+      content: `${QWEN_NO_THINK_PREFIX}\n${content}`,
+    };
+    return prepared;
+  }
+
+  applyQwenRequestControls(body, { maxTokens = QWEN_STREAM_MAX_TOKENS } = {}) {
+    if (!this.isQwenModel()) return body;
+
+    const controlled = {
+      ...body,
+      messages: this.withQwenNoThink(body.messages),
+      max_tokens: body.max_tokens || maxTokens,
+      temperature: body.temperature ?? 0.3,
+    };
+
+    if (this.isThinkingOnlyModel()) {
+      controlled.thinking_budget = QWEN_THINKING_BUDGET_TOKENS;
+    } else {
+      controlled.enable_thinking = false;
+    }
+
+    return controlled;
+  }
+
+  buildBody(messages) {
+    return this.applyQwenRequestControls(super.buildBody(messages), {
+      maxTokens: QWEN_STREAM_MAX_TOKENS,
+    });
+  }
+
+  buildToolRequestBody(messages, tools, extra = {}) {
+    return this.applyQwenRequestControls({
+      model: this.getModel(),
+      stream: false,
+      messages,
+      tools,
+      tool_choice: 'auto',
+      max_tokens: QWEN_TOOL_MAX_TOKENS,
+      ...extra,
+    }, {
+      maxTokens: QWEN_TOOL_MAX_TOKENS,
+    });
+  }
+
+  async fetchWithTimeout(url, options, timeoutMs, { code, message } = {}) {
+    const externalSignal = options?.signal;
+    if (externalSignal?.aborted) {
+      throw new DOMException('The operation was aborted.', 'AbortError');
+    }
+
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    const abortFromExternal = () => controller.abort();
+    externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
+
+    try {
+      return await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (externalSignal?.aborted) throw err;
+      if (timedOut) {
+        throw new ProviderError(message || 'LM Studio request timed out.', {
+          retryable: true,
+          code: code || 'timeout',
+          details: {
+            timeoutMs,
+            model: this.getModel(),
+          },
+        });
+      }
+      if (err.name === 'AbortError') throw err;
+      throw new ProviderError(`Network error: ${err.message}`, { retryable: true });
+    } finally {
+      clearTimeout(timeoutId);
+      externalSignal?.removeEventListener('abort', abortFromExternal);
+    }
+  }
+
   async supportsTools() {
     const cacheKey = this.getToolSupportCacheKey();
     if (LMStudioProvider.toolSupportCache.has(cacheKey)) {
       return LMStudioProvider.toolSupportCache.get(cacheKey);
     }
-    const body = {
-      model: this.getModel(),
-      stream: false,
-      messages: [
-        { role: 'system', content: 'You are a test assistant. Always call the ping tool when available.' },
-        { role: 'user', content: 'Call ping now.' },
-      ],
-      tools: [
-        {
-          type: 'function',
-          function: {
-            name: 'ping',
-            description: 'Probe tool availability',
-            parameters: {
-              type: 'object',
-              properties: {},
-            },
+    const body = this.buildToolRequestBody([
+      { role: 'system', content: 'You are a test assistant. Always call the ping tool when available.' },
+      { role: 'user', content: 'Call ping now.' },
+    ], [
+      {
+        type: 'function',
+        function: {
+          name: 'ping',
+          description: 'Probe tool availability',
+          parameters: {
+            type: 'object',
+            properties: {},
           },
         },
-      ],
+      },
+    ], {
+      model: this.getModel(),
+      stream: false,
       tool_choice: 'required',
       temperature: 0,
-    };
+      max_tokens: 256,
+    });
 
     try {
       console.log('[tools-debug] probing tool support:', cacheKey);
-      const resp = await fetch(this.getEndpoint(), {
+      const resp = await this.fetchWithTimeout(this.getEndpoint(), {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify(body),
+      }, TOOL_PROBE_TIMEOUT_MS, {
+        code: 'tool_probe_timeout',
+        message: 'LM Studio tool support probe timed out.',
       });
       if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
@@ -113,11 +226,58 @@ export class LMStudioProvider extends OpenAIProvider {
           },
         },
       },
+      {
+        type: 'function',
+        function: {
+          name: 'search_comments',
+          description: 'Search extracted user comments/discussion and return matching comment excerpts.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+              max_results: { type: 'integer', minimum: 1, maximum: 20 },
+            },
+            required: ['query'],
+          },
+        },
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'get_comments',
+          description: 'Fetch extracted user comments/discussion items, optionally ordered by page order.',
+          parameters: {
+            type: 'object',
+            properties: {
+              offset: { type: 'integer', minimum: 0 },
+              count: { type: 'integer', minimum: 1, maximum: 60 },
+            },
+          },
+        },
+      },
     ];
   }
 
   getPageText(pageContext) {
     return String(pageContext?.textContent || '');
+  }
+
+  getPageComments(pageContext) {
+    if (!Array.isArray(pageContext?.comments)) return [];
+    return pageContext.comments
+      .map((comment, index) => {
+        if (typeof comment === 'string') {
+          return { id: `c${index + 1}`, text: comment };
+        }
+        return {
+          id: comment?.id || `c${index + 1}`,
+          author: comment?.author || '',
+          time: comment?.time || '',
+          score: comment?.score || '',
+          text: String(comment?.text || ''),
+        };
+      })
+      .filter((comment) => comment.text.trim());
   }
 
   runToolCall(name, args, pageContext) {
@@ -149,6 +309,47 @@ export class LMStudioProvider extends OpenAIProvider {
         chunk,
       };
     }
+    if (name === 'search_comments') {
+      const query = String(args?.query || '').trim();
+      const comments = this.getPageComments(pageContext);
+      if (!query) return { query, total_comments: comments.length, matches: [] };
+      const maxResults = Math.min(20, Math.max(1, Number(args?.max_results) || 8));
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      const matches = [];
+      for (const comment of comments) {
+        if (matches.length >= maxResults) break;
+        const haystack = [
+          comment.id,
+          comment.author,
+          comment.time,
+          comment.score,
+          comment.text,
+        ].join(' ').toLowerCase();
+        if (!terms.every((term) => haystack.includes(term))) continue;
+        matches.push({
+          id: comment.id,
+          author: comment.author,
+          time: comment.time,
+          score: comment.score,
+          excerpt: comment.text.slice(0, 700),
+        });
+      }
+      return { query, total_comments: comments.length, matches };
+    }
+    if (name === 'get_comments') {
+      const comments = this.getPageComments(pageContext);
+      const offset = Math.max(0, Number(args?.offset) || 0);
+      const count = Math.min(60, Math.max(1, Number(args?.count) || 20));
+      return {
+        offset,
+        count,
+        total_comments: comments.length,
+        comments: comments.slice(offset, offset + count).map((comment) => ({
+          ...comment,
+          text: comment.text.slice(0, 1200),
+        })),
+      };
+    }
     return { error: `Unknown tool: ${name}` };
   }
 
@@ -168,38 +369,44 @@ export class LMStudioProvider extends OpenAIProvider {
     const toolMessages = [...messages];
     // Merge tool instructions into the first system message instead of adding
     // a second system message — many jinja templates break on multiple system messages.
+    const toolInstruction = [
+      'Use tools for page inspection instead of asking for full context dump.',
+      'For questions about comments, discussion, replies, audience reaction, or commenter opinions, use search_comments or get_comments first.',
+      'Do not spend time on long internal planning.',
+      'If details are missing, call one useful tool immediately; after tool results, answer the user directly.',
+    ].join(' ');
     const sysIdx = toolMessages.findIndex((m) => m.role === 'system');
     if (sysIdx !== -1) {
       toolMessages[sysIdx] = {
         ...toolMessages[sysIdx],
-        content: toolMessages[sysIdx].content + '\n\nUse tools for page inspection instead of asking for full context dump. Call tools when details are missing.',
+        content: `${toolMessages[sysIdx].content}\n\n${toolInstruction}`,
       };
     } else {
       toolMessages.unshift({
         role: 'system',
-        content: 'Use tools for page inspection instead of asking for full context dump. Call tools when details are missing.',
+        content: toolInstruction,
       });
     }
     const tools = this.buildToolSpec();
 
     for (let step = 0; step < 6; step++) {
-      const body = {
-        model: this.getModel(),
-        stream: false,
-        messages: toolMessages,
-        tools,
-        tool_choice: 'auto',
-      };
+      const body = this.buildToolRequestBody(toolMessages, tools);
       console.log('[tools-debug] tool step %d: sending request', step);
-      const response = await fetch(this.getEndpoint(), {
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: JSON.stringify(body),
-        signal,
-      }).catch(err => {
-        if (err.name === 'AbortError') throw err;
-        throw new ProviderError(`Network error: ${err.message}`, { retryable: true });
-      });
+      let response;
+      try {
+        response = await this.fetchWithTimeout(this.getEndpoint(), {
+          method: 'POST',
+          headers: this.buildHeaders(),
+          body: JSON.stringify(body),
+          signal,
+        }, TOOL_STEP_TIMEOUT_MS, {
+          code: 'tool_timeout',
+          message: 'LM Studio spent too long thinking about tool use.',
+        });
+      } catch (err) {
+        if (err?.code === 'tool_timeout') this.markToolsUnsupported();
+        throw err;
+      }
 
       if (!response.ok) {
         const text = await response.text().catch(() => '');

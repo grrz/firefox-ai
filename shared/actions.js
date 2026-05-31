@@ -18,7 +18,7 @@ export const ACTIONS = [
     id: 'comments',
     label: 'Comments',
     icon: ICON.text,
-    prompt: 'find comments and summarize them in a bullet-point list, focus on the topic-related messages, starting from the most liked/important message',
+    prompt: 'Use the page comments/discussion, not the article body. Summarize the topic-related comments in a bullet-point list, starting from the most liked/important message. If comments are not available in the extracted context, say that clearly.',
     includeContext: true,
     contextScope: 'full',
   },

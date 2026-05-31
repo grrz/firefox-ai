@@ -185,6 +185,22 @@
     return blocks;
   }
 
+  function normalizeExtractedText(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function isElementVisible(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    try {
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    } catch {
+      return true;
+    }
+  }
+
   function getControlLabel(el) {
     const id = el.id && el.id.trim();
     if (id) {
@@ -593,84 +609,274 @@
     return { content: merge, limits };
   }
 
+  const DISCUSSION_HINT_RE = /(comment|discussion|discuss|thread|reply|replies|response|conversation|forum|message|answer|feedback|review|kommentar|komment|comentario|commentaire|comentario|coment|comentario|komentar|\u043a\u043e\u043c\u043c\u0435\u043d\u0442|\u043e\u0431\u0441\u0443\u0436\u0434\u0435\u043d|\u043e\u0442\u0432\u0435\u0442)/i;
+  const COMMENT_ITEM_HINT_RE = /(comment|reply|message|post|answer|response|thread|forum|review|\u043a\u043e\u043c\u043c\u0435\u043d\u0442|\u043e\u0442\u0432\u0435\u0442)/i;
+
+  function elementHintText(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return '';
+    const attrs = [
+      el.id,
+      el.className,
+      el.getAttribute('role'),
+      el.getAttribute('aria-label'),
+      el.getAttribute('data-testid'),
+      el.getAttribute('data-test'),
+      el.getAttribute('itemtype'),
+      el.getAttribute('itemprop'),
+    ];
+    return attrs.map((x) => String(x || '')).join(' ');
+  }
+
+  function looksLikeDiscussionElement(el) {
+    const hint = elementHintText(el);
+    if (DISCUSSION_HINT_RE.test(hint)) return true;
+    const href = el.getAttribute?.('href') || '';
+    if (DISCUSSION_HINT_RE.test(href)) return true;
+    const text = normalizeExtractedText(el.textContent || '').slice(0, 120);
+    return DISCUSSION_HINT_RE.test(text) && /\d/.test(text);
+  }
+
+  function findDiscussionSignals() {
+    const signals = [];
+    const selectors = 'a[href], button, [role="button"], h2, h3, h4, [aria-label]';
+    for (const el of Array.from(document.querySelectorAll(selectors))) {
+      if (signals.length >= 8) break;
+      if (!isElementVisible(el)) continue;
+      const text = normalizeExtractedText(`${el.textContent || ''} ${el.getAttribute('aria-label') || ''}`);
+      const href = el.getAttribute('href') || '';
+      if (!DISCUSSION_HINT_RE.test(`${text} ${href}`)) continue;
+      if (!/\d/.test(text) && !/#/.test(href)) continue;
+      const signal = text.slice(0, 140) || href.slice(0, 140);
+      if (signal && !signals.includes(signal)) signals.push(signal);
+    }
+    return signals;
+  }
+
+  function findDiscussionRoots(root) {
+    const candidates = [];
+    const selector = [
+      'section', 'div', 'article', 'ol', 'ul',
+      '[role="feed"]', '[role="list"]',
+      '[itemtype*="Comment" i]', '[itemprop*="comment" i]',
+    ].join(',');
+    for (const el of Array.from(root.querySelectorAll(selector))) {
+      if (!isElementVisible(el)) continue;
+      const textLength = normalizeExtractedText(el.textContent || '').length;
+      if (textLength < 40) continue;
+      if (!looksLikeDiscussionElement(el)) continue;
+      candidates.push(el);
+    }
+
+    candidates.sort((a, b) => {
+      const aText = normalizeExtractedText(a.textContent || '').length;
+      const bText = normalizeExtractedText(b.textContent || '').length;
+      return bText - aText;
+    });
+
+    const roots = [];
+    for (const el of candidates) {
+      if (roots.some((rootEl) => rootEl.contains(el))) continue;
+      roots.push(el);
+      if (roots.length >= 6) break;
+    }
+    return roots;
+  }
+
+  function pickFirstShortText(root, selectors) {
+    for (const selector of selectors) {
+      let els = [];
+      try {
+        els = Array.from(root.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      for (const el of els) {
+        const text = normalizeExtractedText(el.getAttribute('datetime') || el.textContent || '');
+        if (text.length >= 2 && text.length <= 80) return text;
+      }
+    }
+    return '';
+  }
+
+  function extractCommentText(el) {
+    const selectors = [
+      '[itemprop="text"]',
+      '.comment-body', '.comment-content', '.comment-text', '.comment__message', '.comment-message',
+      '.message-body .bbWrapper', '.message-body', '.post-body', '.reply-body',
+      '[class*="comment"][class*="body"]', '[class*="comment"][class*="content"]',
+      '[class*="comment"][class*="text"]', '[class*="reply"][class*="body"]',
+      'p',
+    ];
+    const pieces = [];
+    for (const selector of selectors) {
+      let matches = [];
+      try {
+        matches = Array.from(el.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      for (const match of matches) {
+        if (!isElementVisible(match)) continue;
+        const text = normalizeExtractedText(match.textContent || '');
+        if (text.length >= 20 && text.length <= 5000) pieces.push(text);
+      }
+      if (pieces.length > 0) break;
+    }
+
+    const text = pieces.length > 0
+      ? pieces.join('\n\n')
+      : normalizeExtractedText(el.textContent || '');
+    return text
+      .replace(/\b(reply|like|dislike|share|report|edit|delete|permalink)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function extractCommentFromElement(el, indexBase = 0) {
+    const text = extractCommentText(el);
+    if (text.length < 20) return null;
+    if (text.length > 5000) return null;
+
+    const author = pickFirstShortText(el, [
+      '[itemprop="author"]', '[rel="author"]',
+      '[class*="author"]', '[class*="user"]', '[class*="username"]', '[class*="login"]',
+      'a[href*="/users/"]', 'a[href*="/user/"]', 'a[href*="/profile/"]',
+    ]);
+    const time = pickFirstShortText(el, [
+      'time[datetime]', '[datetime]',
+      '[class*="time"]', '[class*="date"]', '[class*="created"]',
+    ]);
+    const score = pickFirstShortText(el, [
+      '[class*="score"]', '[class*="rating"]', '[class*="vote"]', '[aria-label*="score" i]',
+    ]);
+
+    return {
+      id: `c${indexBase + 1}`,
+      author,
+      time,
+      score,
+      text: text.slice(0, 1800),
+      selector: toSelector(el),
+    };
+  }
+
+  function collectCommentItems(root, indexBase = 0) {
+    const selector = [
+      '[itemtype*="Comment" i]', '[itemprop*="comment" i]',
+      '[role="article"]', '[role="listitem"]',
+      'article', 'li',
+      '[class*="comment" i]', '[id*="comment" i]',
+      '[class*="reply" i]', '[id*="reply" i]',
+      '[class*="message" i]', '[class*="post" i]',
+      '[data-testid*="comment" i]', '[data-test*="comment" i]',
+    ].join(',');
+
+    let candidates = [];
+    try {
+      candidates = Array.from(root.querySelectorAll(selector));
+    } catch {
+      candidates = [];
+    }
+
+    if (candidates.length === 0) {
+      candidates = Array.from(root.children || []);
+    }
+
+    const filtered = [];
+    for (const el of candidates) {
+      if (!isElementVisible(el)) continue;
+      const text = normalizeExtractedText(el.textContent || '');
+      if (text.length < 20 || text.length > 7000) continue;
+      const hint = elementHintText(el);
+      const role = el.getAttribute('role') || '';
+      if (
+        !COMMENT_ITEM_HINT_RE.test(hint) &&
+        role !== 'article' &&
+        role !== 'listitem' &&
+        el.tagName.toLowerCase() !== 'li' &&
+        !/Comment/i.test(el.getAttribute('itemtype') || '')
+      ) {
+        continue;
+      }
+      filtered.push(el);
+    }
+
+    const leaves = filtered.filter((el) => {
+      const childCount = filtered.filter((other) => other !== el && el.contains(other)).length;
+      return childCount === 0 || normalizeExtractedText(el.textContent || '').length < 1200;
+    });
+
+    const comments = [];
+    const seen = new Set();
+    for (const el of leaves) {
+      const comment = extractCommentFromElement(el, indexBase + comments.length);
+      if (!comment) continue;
+      const key = normalizeTextForMatch(comment.text).slice(0, 300);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      comments.push(comment);
+      if (comments.length >= 200) break;
+    }
+    return comments;
+  }
+
   /**
-   * Extract comments from the live document.
-   * Handles: same-origin comment iframes (XenForo, Disqus, etc.)
-   * and inline comment sections.
+   * Extract comments/discussion from the live document.
+   * Keeps the result separate from article text so models can query it directly.
    */
   function extractComments() {
+    const limits = [];
     const comments = [];
+    const seen = new Set();
 
-    // 1. Try same-origin comment iframes on the live document
+    const addComments = (items) => {
+      for (const item of items) {
+        const key = normalizeTextForMatch(item.text).slice(0, 300);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        item.id = `c${comments.length + 1}`;
+        comments.push(item);
+        if (comments.length >= 200) return;
+      }
+    };
+
     try {
       const iframes = document.querySelectorAll('iframe');
       for (const iframe of iframes) {
+        const src = iframe.src || '';
+        const containerHint = `${src} ${elementHintText(iframe)} ${elementHintText(iframe.parentElement)}`;
+        if (!DISCUSSION_HINT_RE.test(containerHint)) continue;
         try {
           const doc = iframe.contentDocument;
-          if (!doc || !doc.body) continue;
-          const src = iframe.src || '';
-          const container = iframe.parentElement;
-          const cid = (container?.id || '') + ' ' + (container?.className || '');
-          const looksLikeComments =
-            src.includes('comment') || src.includes('forum') ||
-            src.includes('civis') || src.includes('discuss') ||
-            src.includes('thread') || cid.includes('comment') ||
-            cid.includes('forum') || cid.includes('thread');
-          if (!looksLikeComments) continue;
-
-          // Try specific selectors for common forum/comment systems
-          const selectors = [
-            '.message-body .bbWrapper', // XenForo
-            '.message-body', '.comment-body', '.comment-content',
-            '.comment-text', '.post-body', '.reply-body',
-          ];
-          for (const sel of selectors) {
-            const els = doc.querySelectorAll(sel);
-            if (els.length > 0) {
-              for (const el of els) {
-                const text = el.textContent.trim();
-                if (text.length > 10) comments.push(text);
-              }
-              break;
-            }
-          }
-          // Fallback: paragraphs from the iframe
-          if (comments.length === 0) {
-            const ps = doc.querySelectorAll('article p, .message p, p');
-            for (const p of ps) {
-              const text = p.textContent.trim();
-              if (text.length > 20) comments.push(text);
-            }
-          }
+          if (!doc?.body) continue;
+          addComments(collectCommentItems(doc.body, comments.length).map((comment) => ({
+            ...comment,
+            selector: '',
+          })));
         } catch {
-          // Cross-origin iframe — skip
+          limits.push('comments: cross-origin discussion iframe could not be read');
         }
       }
     } catch {}
 
-    // 2. Inline comments (not in iframes)
+    const roots = findDiscussionRoots(document.body);
+    for (const root of roots) {
+      addComments(collectCommentItems(root, comments.length));
+      if (comments.length >= 200) break;
+    }
+
     if (comments.length === 0) {
-      const inlineSelectors = [
-        '#comments .comment-body', '#comments .comment-content',
-        '.comments .comment-body', '.comments .comment-content',
-        '.comment-list .comment-text', '#disqus_thread .post-body',
-      ];
-      for (const sel of inlineSelectors) {
-        try {
-          const els = document.querySelectorAll(sel);
-          if (els.length > 0) {
-            for (const el of els) {
-              const text = el.textContent.trim();
-              if (text.length > 10) comments.push(text);
-            }
-            break;
-          }
-        } catch {}
+      const signals = findDiscussionSignals();
+      if (signals.length > 0) {
+        limits.push(`comments: found discussion controls (${signals.join(' | ')}), but no readable comment bodies in the current DOM`);
       }
     }
 
-    // Cap to avoid massive context
-    return comments.slice(0, 50);
+    return {
+      comments: comments.slice(0, 120),
+      totalDetected: comments.length,
+      limits,
+    };
   }
 
   function normalizeTextForMatch(text) {
@@ -855,10 +1061,22 @@
 
     if (data.comments && data.comments.length > 0) {
       lines.push('');
-      lines.push('## User Comments');
+      lines.push(`## User Comments (${data.comments.length} extracted)`);
       lines.push('');
       for (const comment of data.comments) {
-        lines.push(comment);
+        const body = typeof comment === 'string' ? comment : comment.text;
+        const meta = [];
+        if (comment && typeof comment === 'object') {
+          if (comment.id) meta.push(comment.id);
+          if (comment.author) meta.push(`by ${comment.author}`);
+          if (comment.time) meta.push(comment.time);
+          if (comment.score) meta.push(`score ${comment.score}`);
+        }
+        const prefix = meta.length ? `- ${meta.join(' | ')}: ` : '- ';
+        const tag = comment && typeof comment === 'object'
+          ? sourceTagForSelector(comment.selector, body)
+          : '';
+        lines.push(`${prefix}${body}${tag}`);
         lines.push('');
       }
     }
@@ -1746,6 +1964,8 @@
     const metaDesc = document.querySelector('meta[name="description"]');
     const description = metaDesc ? metaDesc.getAttribute('content') || '' : '';
 
+    const commentResult = extractComments();
+
     const data = {
       title,
       url,
@@ -1777,7 +1997,12 @@
         'code blocks',
         limits
       ),
-      comments: extractComments(),
+      comments: limitArray(
+        commentResult.comments || [],
+        120,
+        'comments',
+        limits
+      ),
       forms: limitArray(
         extractFormState(findMainContent(document.body)),
         120,
@@ -1785,6 +2010,7 @@
         limits
       ),
     };
+    limits.push(...(commentResult.limits || []));
 
     const liveRoot = findMainContent(document.body);
     const built = buildTextContentWithSources(data, { liveRoot });
@@ -1804,6 +2030,7 @@
       textContent,
       wordCount,
       sourceAnchors: built.sourceAnchors || {},
+      comments: data.comments,
       technicalContext,
       contextLimits: {
         applied: limits.length > 0,
