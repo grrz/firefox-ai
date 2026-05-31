@@ -1056,6 +1056,20 @@ function buildThinkingHtml(thinkingText, { streaming = false, elapsed = 0 } = {}
   return `<details class="thinking-block"><summary class="thinking-summary">${escapeHtml(label)}</summary><div class="thinking-content">${rendered}</div></details>`;
 }
 
+function formatStreamElapsed(ms) {
+  const totalSeconds = Math.max(0, Math.floor(Number(ms) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+function buildStreamStatusText(message, elapsedMs) {
+  const label = String(message || 'Still working...').trim();
+  if (!Number.isFinite(Number(elapsedMs)) || Number(elapsedMs) < 1000) return label;
+  return `${label} ${formatStreamElapsed(elapsedMs)}`;
+}
+
 function renderStreamingBubble(rawText, apiThinking, { partial = true } = {}) {
   const render = partial ? renderPartialMarkdown : renderMarkdown;
   let thinkingText = apiThinking;
@@ -1096,6 +1110,10 @@ function renderStreamingBubble(rawText, apiThinking, { partial = true } = {}) {
   if (contentText) {
     html += render(linkifySourceTags(contentText));
   }
+  if (!contentText && !thinkingText) {
+    const statusText = renderStreamingBubble._statusText || 'Waiting for model...';
+    html += `<div class="stream-status">${escapeHtml(statusText)}</div>`;
+  }
   return html;
 }
 
@@ -1120,9 +1138,15 @@ function createStreamingElement(stream) {
   if (stream.streamedText || stream.streamedThinking) {
     renderStreamingBubble._timing = { start: stream.thinkingStartTime, elapsed: stream.thinkingElapsed };
     renderStreamingBubble._contextMode = stream.contextMode || '';
+    renderStreamingBubble._statusText = stream.statusText || '';
     setSanitizedHtml(bubble, renderStreamingBubble(stream.streamedText, stream.streamedThinking));
     renderStreamingBubble._timing = null;
     renderStreamingBubble._contextMode = '';
+    renderStreamingBubble._statusText = '';
+  } else if (stream.statusText) {
+    renderStreamingBubble._statusText = stream.statusText;
+    setSanitizedHtml(bubble, renderStreamingBubble('', ''));
+    renderStreamingBubble._statusText = '';
   }
 
   streamEl.appendChild(bubble);
@@ -1140,9 +1164,11 @@ function updateStreamingDOM(stream) {
 
   renderStreamingBubble._timing = { start: stream.thinkingStartTime, elapsed: stream.thinkingElapsed };
   renderStreamingBubble._contextMode = stream.contextMode || '';
+  renderStreamingBubble._statusText = stream.statusText || '';
   setSanitizedHtml(bubble, renderStreamingBubble(stream.streamedText, stream.streamedThinking));
   renderStreamingBubble._timing = null;
   renderStreamingBubble._contextMode = '';
+  renderStreamingBubble._statusText = '';
 
   bubble.classList.add('streaming-cursor');
   scrollToBottom();
@@ -1179,6 +1205,9 @@ async function startStreaming() {
     thinkingElapsed: 0,
     contextMode: '',
     userAborted: false,
+    statusText: 'Preparing request...',
+    lastHeartbeatAt: 0,
+    elapsedMs: 0,
   };
   activeStreams.set(tabId, stream);
 
@@ -1203,6 +1232,11 @@ async function startStreaming() {
       updateStreamingDOM(stream);
     } else if (msg.type === 'context_mode') {
       stream.contextMode = msg.mode || '';
+      updateStreamingDOM(stream);
+    } else if (msg.type === 'heartbeat') {
+      stream.lastHeartbeatAt = Date.now();
+      stream.elapsedMs = Number(msg.elapsedMs) || stream.elapsedMs || 0;
+      stream.statusText = buildStreamStatusText(msg.message, stream.elapsedMs);
       updateStreamingDOM(stream);
     } else if (msg.type === 'stream_end') {
       finishStream(tabId, msg.aborted);
@@ -1232,6 +1266,8 @@ async function startStreaming() {
           'The sidebar port disconnected while an AI request was still active.',
           `Provider: ${state.settings?.activeProvider || 'unknown'}`,
           `Received characters before disconnect: ${disconnectedStream.streamedText.length}`,
+          `Last keepalive: ${disconnectedStream.lastHeartbeatAt ? new Date(disconnectedStream.lastHeartbeatAt).toISOString() : 'never'}`,
+          `Elapsed before disconnect: ${formatStreamElapsed(disconnectedStream.elapsedMs || 0)}`,
         ].join('\n'),
         retryable: true,
       }, { tabId });

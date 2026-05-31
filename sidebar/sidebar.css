@@ -710,6 +710,11 @@ body {
   animation: blink 0.7s step-end infinite;
 }
 
+.stream-status {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 @keyframes blink {
   50% { opacity: 0; }
 }

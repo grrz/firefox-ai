@@ -7,6 +7,7 @@ import {ProviderError} from './providers/base.js';
 
 const PAGE_CHATS_STORAGE_KEY = 'pageChatsByUrl';
 const MAX_SAVED_PAGE_CHATS = 50;
+const PORT_KEEPALIVE_INTERVAL_MS = 10000;
 
 function createProvider(settings) {
   const config = getProviderConfig(settings);
@@ -381,6 +382,48 @@ browser.runtime.onConnect.addListener((port) => {
   let requestChatOptions = {};
   let streamedText = '';
   let streamedThinking = '';
+  let heartbeatTimer = null;
+  let heartbeatStatus = 'Preparing request...';
+  let heartbeatStartedAt = 0;
+
+  const postToPort = (payload) => {
+    try {
+      port.postMessage(payload);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const sendHeartbeat = () => {
+    if (!heartbeatStartedAt) return;
+    const ok = postToPort({
+      type: 'heartbeat',
+      message: heartbeatStatus,
+      elapsedMs: Date.now() - heartbeatStartedAt,
+    });
+    if (!ok) abortController?.abort();
+  };
+
+  const startHeartbeat = () => {
+    clearHeartbeat();
+    heartbeatStartedAt = Date.now();
+    heartbeatTimer = setInterval(sendHeartbeat, PORT_KEEPALIVE_INTERVAL_MS);
+    sendHeartbeat();
+  };
+
+  const clearHeartbeat = () => {
+    if (heartbeatTimer != null) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    heartbeatStartedAt = 0;
+  };
+
+  const updateHeartbeatStatus = (message) => {
+    heartbeatStatus = message || 'Still working...';
+    sendHeartbeat();
+  };
 
   port.onMessage.addListener(async (message) => {
     if (message.type === 'abort') {
@@ -396,6 +439,8 @@ browser.runtime.onConnect.addListener((port) => {
       requestChatOptions = chatOptions && typeof chatOptions === 'object' ? chatOptions : {};
       streamedText = '';
       streamedThinking = '';
+      heartbeatStatus = 'Preparing request...';
+      startHeartbeat();
       let settings = null;
 
       try {
@@ -408,7 +453,7 @@ browser.runtime.onConnect.addListener((port) => {
             code: 'invalid_settings',
             details: { provider: settings.activeProvider },
           });
-          port.postMessage({
+          postToPort({
             type: 'error',
             error: validation.error,
             userMessage: validation.error,
@@ -424,6 +469,7 @@ browser.runtime.onConnect.addListener((port) => {
         let useToolMode = false;
         const shouldTool = shouldUseToolMode(settings.activeProvider, provider, pageContext);
         if (shouldTool) {
+          updateHeartbeatStatus('Checking LM Studio tool support...');
           useToolMode = await provider.supportsTools();
         }
 
@@ -431,11 +477,10 @@ browser.runtime.onConnect.addListener((port) => {
         const fullContextMessages = buildChatMessages(messages, pageContext, settings, { useToolMode: false });
         const chatMessages = useToolMode ? toolModeMessages : fullContextMessages;
         const contextMode = useToolMode ? 'tools' : 'full_context';
-        try {
-          port.postMessage({ type: 'context_mode', mode: contextMode });
-        } catch {}
+        postToPort({ type: 'context_mode', mode: contextMode });
 
-        port.postMessage({ type: 'stream_start' });
+        postToPort({ type: 'stream_start' });
+        updateHeartbeatStatus(useToolMode ? 'Waiting for LM Studio tool response...' : 'Waiting for model response...');
 
         const buildSendOptions = (toolMode) => ({
           signal: abortController.signal,
@@ -443,20 +488,13 @@ browser.runtime.onConnect.addListener((port) => {
           useToolMode: toolMode,
           onThinkingToken: (token) => {
             streamedThinking += token;
-            try {
-              port.postMessage({ type: 'stream_thinking', token });
-            } catch {
-              abortController?.abort();
-            }
+            heartbeatStatus = 'Model is thinking...';
+            if (!postToPort({ type: 'stream_thinking', token })) abortController?.abort();
           },
           onToken: (token) => {
             streamedText += token;
-            try {
-              port.postMessage({ type: 'stream_token', token });
-            } catch {
-              // Port disconnected
-              abortController?.abort();
-            }
+            heartbeatStatus = 'Receiving answer...';
+            if (!postToPort({ type: 'stream_token', token })) abortController?.abort();
           },
         });
 
@@ -470,13 +508,13 @@ browser.runtime.onConnect.addListener((port) => {
           if (shouldRetryLMStudioWithoutTools(err, settings.activeProvider, useToolMode, streamedText)) {
             streamedText = '';
             streamedThinking = '';
-            try {
-              port.postMessage({ type: 'context_mode', mode: 'full_context' });
-            } catch {}
+            postToPort({ type: 'context_mode', mode: 'full_context' });
+            updateHeartbeatStatus('Tool mode did not return text. Retrying with full page context...');
 
             await sendProviderMessage(fullContextMessages, false);
           } else if (shouldContinueIncompleteResponse(err, streamedText)) {
             try {
+              updateHeartbeatStatus('The answer hit an output limit. Asking the model to continue...');
               const continuationMessages = buildContinuationMessages(chatMessages, streamedText);
               await sendProviderMessage(continuationMessages, false);
             } catch (continueErr) {
@@ -518,31 +556,31 @@ browser.runtime.onConnect.addListener((port) => {
           await persistChatForPage(pageKey, fullMessages, requestPageContext, requestChatOptions);
         }
 
-        port.postMessage({ type: 'stream_end' });
+        postToPort({ type: 'stream_end' });
       } catch (err) {
         if (err.name === 'AbortError') {
-          try { port.postMessage({ type: 'stream_end', aborted: true }); } catch {}
+          postToPort({ type: 'stream_end', aborted: true });
           return;
         }
-        try {
-          port.postMessage({
-            type: 'error',
-            error: err.message || 'An unexpected error occurred',
-            userMessage: getFriendlyErrorMessage(err, streamedText),
-            technicalDetails: buildTechnicalErrorDetails(err, settings, streamedText),
-            retryable: err.retryable || false,
-            status: err.status || null,
-            code: err.code || null,
-            partial: !!String(streamedText || '').trim(),
-          });
-        } catch {}
+        postToPort({
+          type: 'error',
+          error: err.message || 'An unexpected error occurred',
+          userMessage: getFriendlyErrorMessage(err, streamedText),
+          technicalDetails: buildTechnicalErrorDetails(err, settings, streamedText),
+          retryable: err.retryable || false,
+          status: err.status || null,
+          code: err.code || null,
+          partial: !!String(streamedText || '').trim(),
+        });
       } finally {
+        clearHeartbeat();
         abortController = null;
       }
     }
   });
 
   port.onDisconnect.addListener(() => {
+    clearHeartbeat();
     abortController?.abort();
   });
 });
